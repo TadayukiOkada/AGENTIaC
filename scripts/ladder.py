@@ -336,6 +336,104 @@ def summarize(rows):
             for depth, cases in sorted(table.items())]
 
 
+def _latest_by_depth(rows):
+    latest = {}
+    for row in rows:
+        latest[row['case']] = row
+    table = {}
+    for row in latest.values():
+        table.setdefault(row['depth'], []).append(row)
+    return table
+
+
+def _stats(cases, key):
+    values = [c[key] for c in cases if c.get('status') == 'ok' and c.get(key) is not None]
+    if not values:
+        return None
+    return {'median': round(statistics.median(values), 2), 'min': round(min(values), 2), 'max': round(max(values), 2)}
+
+
+def _delta_pct(base_val, cand_val):
+    if base_val in (None, 0) or cand_val is None:
+        return None
+    return round((cand_val - base_val) / base_val * 100.0, 2)
+
+
+def compare_runs(base_label, base_rows, base_manifest, cand_label, cand_rows, cand_manifest,
+                 base_identity=None, cand_identity=None):
+    """Compare two ladder runs across shared depths: medians, min-max ranges, % deltas, and pooled decode ratio."""
+    base_table, cand_table = _latest_by_depth(base_rows), _latest_by_depth(cand_rows)
+    depths = sorted(set(base_table) | set(cand_table))
+    rows = []
+    base_decodes, cand_decodes = [], []
+    for depth in depths:
+        bc, cc = base_table.get(depth, []), cand_table.get(depth, [])
+        bd, cd = _stats(bc, 'decode_tok_s'), _stats(cc, 'decode_tok_s')
+        bp, cp = _stats(bc, 'prefill_tok_s'), _stats(cc, 'prefill_tok_s')
+        bt, ct = _stats(bc, 'cold_ttft_s'), _stats(cc, 'cold_ttft_s')
+        base_decodes.extend(c['decode_tok_s'] for c in bc if c.get('status') == 'ok' and c.get('decode_tok_s') is not None)
+        cand_decodes.extend(c['decode_tok_s'] for c in cc if c.get('status') == 'ok' and c.get('decode_tok_s') is not None)
+        rows.append({
+            'depth': depth,
+            'base_ok': sum(c.get('status') == 'ok' for c in bc),
+            'base_cases': len(bc),
+            'base_answers': sum(bool(c.get('answer_passed')) for c in bc),
+            'cand_ok': sum(c.get('status') == 'ok' for c in cc),
+            'cand_cases': len(cc),
+            'cand_answers': sum(bool(c.get('answer_passed')) for c in cc),
+            'decode': {'base': bd, 'cand': cd, 'delta_pct': _delta_pct(bd and bd['median'], cd and cd['median'])},
+            'prefill': {'base': bp, 'cand': cp, 'delta_pct': _delta_pct(bp and bp['median'], cp and cp['median'])},
+            'cold_ttft': {'base': bt, 'cand': ct, 'delta_pct': _delta_pct(bt and bt['median'], ct and ct['median'])},
+        })
+    pooled_ratio = (round(statistics.mean(cand_decodes) / statistics.mean(base_decodes), 4)
+                    if base_decodes and cand_decodes and statistics.mean(base_decodes) else None)
+    return {
+        'baseline': base_label,
+        'candidate': cand_label,
+        'corpus_match': base_manifest.get('corpus_revision') == cand_manifest.get('corpus_revision'),
+        'base_corpus': base_manifest.get('corpus_revision'),
+        'cand_corpus': cand_manifest.get('corpus_revision'),
+        'base_identity': (base_identity[0].get('served') if base_identity else None),
+        'cand_identity': (cand_identity[0].get('served') if cand_identity else None),
+        'pooled_decode_ratio': pooled_ratio,
+        'depths': rows,
+    }
+
+
+def _fmt_stat(stat):
+    if stat is None:
+        return '-'
+    return f"{stat['median']} ({stat['min']}–{stat['max']})"
+
+
+def _fmt_delta(val):
+    if val is None:
+        return '-'
+    return f"{val:+.2f}%"
+
+
+def format_comparison(report):
+    lines = [
+        f"Ladder comparison: {report['candidate']} vs {report['baseline']}",
+        f"Corpus match: {'yes' if report['corpus_match'] else 'NO'} | Pooled decode ratio: {report['pooled_decode_ratio']}",
+        '',
+        '| depth | decode base | decode cand | decode Δ | prefill Δ | cold TTFT Δ | answers (base / cand) |',
+        '|---:|---|---|---:|---:|---:|---|',
+    ]
+    for row in report['depths']:
+        lines.append(
+            f"| {row['depth']} | {_fmt_stat(row['decode']['base'])} | {_fmt_stat(row['decode']['cand'])} | "
+            f"{_fmt_delta(row['decode']['delta_pct'])} | {_fmt_delta(row['prefill']['delta_pct'])} | "
+            f"{_fmt_delta(row['cold_ttft']['delta_pct'])} | "
+            f"{row['base_answers']}/{row['base_cases']} / {row['cand_answers']}/{row['cand_cases']} |"
+        )
+    return '\n'.join(lines)
+
+
+def _load_json_if_exists(path):
+    return json.loads(path.read_text()) if path.exists() else None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -349,10 +447,22 @@ def main():
     r.add_argument('--retry-failed', action='store_true')
     p = sub.add_parser('report')
     p.add_argument('label')
+    c = sub.add_parser('compare', help='compare two ladder labels under artifacts/ladder/')
+    c.add_argument('baseline')
+    c.add_argument('candidate')
+    c.add_argument('--json', action='store_true')
     args = parser.parse_args()
     os.umask(0o077)
     if args.command == 'run':
         run(args)
+    elif args.command == 'compare':
+        base_dir, cand_dir = OUT / args.baseline, OUT / args.candidate
+        report = compare_runs(
+            args.baseline, load_results(base_dir), _load_json_if_exists(base_dir / 'manifest.json') or {},
+            args.candidate, load_results(cand_dir), _load_json_if_exists(cand_dir / 'manifest.json') or {},
+            _load_json_if_exists(base_dir / 'identity.json'), _load_json_if_exists(cand_dir / 'identity.json'),
+        )
+        print(json.dumps(report, indent=2) if args.json else format_comparison(report))
     else:
         print(json.dumps(summarize(load_results(OUT / args.label)), indent=2))
 

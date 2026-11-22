@@ -5,7 +5,7 @@
     mode: '0750'
 - name: Copy the pinned TensorFold manifest
   ansible.builtin.copy:
-    src: ../backends/tf-1.1.4-qfn-mxfp8-nvfp4.json
+    src: '{{ instance_root }}/backends/tf-1.1.4-qfn-mxfp8-nvfp4.json'
     dest: '{{ project_root }}/backend-manifests/spark-tensorfold.json'
     mode: '0640'
 - name: Copy the preparation script

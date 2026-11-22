@@ -1,6 +1,8 @@
 - name: Start selected verified project profile
   hosts: workers
   gather_facts: false
+  vars:
+    instance_root: "{{ lookup('ansible.builtin.env', 'AGENTIAC_ROOT') | default((inventory_dir | default(playbook_dir)) | dirname, true) }}"
   tasks:
     - name: Require an explicit host
       ansible.builtin.import_tasks: tasks/require-limit.yml
@@ -11,7 +13,7 @@
           - model is match('^[a-z0-9-]+$')
     - name: Read profile
       ansible.builtin.set_fact:
-        manifest: "{{ lookup('file', '../profiles/' + model + '.json') | from_json }}"
+        manifest: "{{ lookup('file', instance_root + '/profiles/' + model + '.json') | from_json }}"
     # A borrowed host only serves on demand, through agentiac claim.
     - name: Refuse always-on serving on a borrowed host
       ansible.builtin.assert:
@@ -47,7 +49,7 @@
         label: '{{ item.item }}'
     - name: Install node-specific protected API key
       ansible.builtin.copy:
-        src: '../secrets/nodes/{{ inventory_hostname }}.key'
+        src: '{{ instance_root }}/secrets/nodes/{{ inventory_hostname }}.key'
         dest: '{{ project_root }}/api.key'
         mode: '0600'
       no_log: true

@@ -3,6 +3,8 @@
 - name: Prepare a pinned backend on its worker
   hosts: workers
   gather_facts: false
+  vars:
+    instance_root: "{{ lookup('ansible.builtin.env', 'AGENTIAC_ROOT') | default((inventory_dir | default(playbook_dir)) | dirname, true) }}"
   tasks:
     - name: Require an explicit host
       ansible.builtin.import_tasks: tasks/require-limit.yml

@@ -143,10 +143,20 @@ def isolated_environment(environ, root, venv):
     return env
 
 
+def terminal_root(source):
+    """Where setup.py, requirements.txt, serve/server.py, and compiled engines live inside SOURCE.
+
+    Releases up to 0.2.15 place them at SOURCE directly; 0.2.16+ places them under SOURCE/terminal/.
+    """
+    source = Path(source)
+    nested = source / 'terminal'
+    return nested if (nested / 'setup.py').is_file() else source
+
+
 def phase_setup(args):
     backend = load_backend(args.backend)
     weights = backend['weights']
-    sys.path.insert(0, str(args.root / 'source'))
+    sys.path.insert(0, str(terminal_root(args.root / 'source')))
     import setup
     original_run = setup.run
     original_download = setup.download
@@ -342,7 +352,7 @@ def verify_mtp(python, source, mtp_dir, env):
     """Check the fetched MTP tensors against the pinned checkpoint's hashes (upstream tool, local files only)."""
     if mtp_dir is None or not (Path(mtp_dir) / 'tensors').is_dir():
         return None
-    check = subprocess.run([str(python), str(source / 'tools' / 'mtp_fetch.py'), 'verify', '--out', str(mtp_dir)],
+    check = subprocess.run([str(python), str(terminal_root(source) / 'tools' / 'mtp_fetch.py'), 'verify', '--out', str(mtp_dir)],
                            capture_output=True, text=True, env=env, timeout=1800)
     if check.returncode:
         raise RuntimeError('MTP tensor verification failed: ' + (check.stdout or check.stderr)[-300:])
@@ -368,8 +378,9 @@ def fetch_drafter_pack(python, source, root, backend, node, env):
     if not declared:
         raise SystemExit(f"{backend['id']} declares workers.{node}.drafter = {drafter_choice(backend, node)} "
                          'but names no drafter_pack: the file that drafter needs is a pin, not a guess')
-    got = subprocess.run([str(python), str(source / 'strata.py'), 'drafting', 'fetch',
-                          '--data-dir', str(root / 'data')], cwd=source, env=env,
+    app_root = terminal_root(source)
+    got = subprocess.run([str(python), str(app_root / 'strata.py'), 'drafting', 'fetch',
+                          '--data-dir', str(root / 'data')], cwd=app_root, env=env,
                          capture_output=True, text=True, timeout=3600)
     target = root / 'data' / declared['path']
     if not target.is_file():
@@ -436,7 +447,11 @@ def prepared_engine(root, source, backend):
     exists to prevent, so an ambiguous or missing binary fails here, before anything is recorded as measured.
     """
     binary = backend.get('engine_binary', 'strata')
-    direct = source / backend.get('engine_dir', 'engine-cuda12') / binary
+    engine_dir = backend.get('engine_dir', 'engine-cuda12')
+    app_direct = terminal_root(source) / engine_dir / binary
+    if app_direct.is_file():
+        return app_direct
+    direct = source / engine_dir / binary
     if direct.is_file():
         return direct
     package = backend.get('engine_package_dir')
@@ -540,13 +555,14 @@ def main():
             head = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
             if head != backend['source_revision']:
                 raise RuntimeError('existing source is not at the pinned revision')
+            app_root = terminal_root(source)
             reused = reserve_then_reuse(backend, args.root, args.scratch_gib, args.reuse_root, record)
             record('python-environment', reused=reused)
             venv = args.root / '.venv'
             python = venv / 'bin/python'
             if not python.exists():
                 subprocess.run(['python3', '-m', 'venv', str(venv)], check=True)
-            subprocess.run([str(python), '-m', 'pip', 'install', '-q', '--only-binary=:all:', '-r', str(source / 'requirements.txt')], check=True)
+            subprocess.run([str(python), '-m', 'pip', 'install', '-q', '--only-binary=:all:', '-r', str(app_root / 'requirements.txt')], check=True)
             if backend.get('pip_build_tools'):  # e.g. a newer CMake than the system one, inside the venv only
                 subprocess.run([str(python), '-m', 'pip', 'install', '-q', '--only-binary=:all:', *backend['pip_build_tools']], check=True)
             home = args.root / 'home'; home.mkdir(exist_ok=True)
@@ -566,7 +582,7 @@ def main():
                        '--backend', str(args.backend.resolve())]
             if args.isolated:
                 command.append('--isolated')
-            child = subprocess.run(command, cwd=source, env=env, timeout=8 * 3600)
+            child = subprocess.run(command, cwd=app_root, env=env, timeout=8 * 3600)
             if child.returncode:
                 raise RuntimeError('Strata setup exited ' + str(child.returncode))
             record('verify', reused=reused)

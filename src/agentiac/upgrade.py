@@ -29,9 +29,16 @@ got from a declared file. Where it cannot answer it says `unknown` and names the
 same shape `doctor` uses.
 """
 import copy
+import json
 from pathlib import Path
+import re
+import subprocess
+import urllib.error
+import urllib.request
 
-from agentiac import declared
+import yaml
+
+from agentiac import backend_names, declared
 from agentiac.errors import explain
 from agentiac.errors import command as cli_name
 
@@ -415,8 +422,7 @@ def plan(graph, host, backend_id):
         {'step': 'prepare',
          'where': 'the worker',
          'state': 'open',
-         'what': f'{cli_name()} ops prepare {host} --backend {backend_id}'
-                 + (f' --reuse-declared' if found['candidates'] else ' --download') + ' --isolated'},
+         'what': _prepare_command(host, backend_id, found)},
         {'step': 'measure before applying',
          'where': 'the host',
          'state': 'open',
@@ -459,6 +465,18 @@ def plan(graph, host, backend_id):
             'reuse': found, 'blockers': blockers, 'notes': notes, 'steps': steps}
 
 
+def _prepare_command(host, backend_id, found):
+    candidates = found['candidates']
+    if not candidates:
+        flag = '--download'
+    elif len(candidates) == 1:
+        flag = '--reuse-declared'
+    else:
+        preferred = next((c for c in candidates if c.get('state') == 'serving'), candidates[-1])
+        flag = f"--reuse-root {preferred['root']}"
+    return f'{cli_name()} ops prepare {host} --backend {backend_id} {flag} --isolated'
+
+
 def graph_fixture(root=None):
     """A fresh read of the declared files (used by `plan`/`reuse` and by the tests)."""
     return declared.load(root or declared.ROOT)
@@ -469,3 +487,386 @@ def with_ledger(graph, host, mutate):
     clone = copy.deepcopy(graph)
     mutate(clone.retention.setdefault(host, {}))
     return clone
+
+
+def _github_slug(repository):
+    cleaned = repository.rstrip('/').removesuffix('.git')
+    parts = cleaned.split('/')
+    if len(parts) < 2:
+        raise SystemExit(f'cannot derive GitHub owner/repo from {repository!r}')
+    return f'{parts[-2]}/{parts[-1]}'
+
+
+def _resolve_tag_revision(repository, version):
+    tag = f'v{version}' if not str(version).startswith('v') else str(version)
+    done = subprocess.run(
+        ['git', 'ls-remote', '--tags', repository, f'refs/tags/{tag}', f'refs/tags/{tag}^{{}}'],
+        capture_output=True, text=True, timeout=30,
+    )
+    if done.returncode != 0:
+        raise SystemExit(f'git ls-remote failed for {repository} {tag}: {done.stderr.strip()}')
+    refs = {}
+    for line in done.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            refs[parts[1]] = parts[0]
+    revision = refs.get(f'refs/tags/{tag}^{{}}') or refs.get(f'refs/tags/{tag}')
+    if not revision:
+        raise SystemExit(f'tag {tag} not found in {repository}')
+    return revision
+
+
+def _fetch_raw(slug, revision, rel_path):
+    url = f'https://raw.githubusercontent.com/{slug}/{revision}/{rel_path}'
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            return response.read().decode('utf-8')
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise SystemExit(f'failed to fetch {url}: HTTP {error.code}') from error
+    except OSError as error:
+        raise SystemExit(f'failed to fetch {url}: {error}') from error
+
+
+def fetch_strata_upstream(repository, version, revision=None, setup_file=None, build_reqs=None):
+    """Fetch upstream setup.py and requirements-build.txt for VERSION (or read local files for offline/test use)."""
+    rev = revision or _resolve_tag_revision(repository, version)
+    if setup_file is not None:
+        setup_path = Path(setup_file)
+        setup_text = setup_path.read_text(encoding='utf-8')
+        layout_kind = 'terminal' if setup_path.parent.name == 'terminal' else 'root'
+        reqs_text = Path(build_reqs).read_text(encoding='utf-8') if build_reqs is not None else None
+        return rev, layout_kind, setup_text, reqs_text
+    slug = _github_slug(repository)
+    setup_text = _fetch_raw(slug, rev, 'terminal/setup.py')
+    layout_kind = 'terminal'
+    if setup_text is None:
+        setup_text = _fetch_raw(slug, rev, 'setup.py')
+        layout_kind = 'root'
+    if setup_text is None:
+        raise SystemExit(f'neither terminal/setup.py nor setup.py found at {slug}@{rev[:12]}')
+    if build_reqs is not None:
+        reqs_text = Path(build_reqs).read_text(encoding='utf-8')
+    else:
+        prefix = 'terminal/' if layout_kind == 'terminal' else ''
+        reqs_text = _fetch_raw(slug, rev, f'{prefix}requirements-build.txt')
+    return rev, layout_kind, setup_text, reqs_text
+
+
+def parse_strata_setup(setup_text, model_repository, base_files, build_reqs_text=None):
+    """Extract ggml_revision, model_revision, pinned files, and build tools from upstream setup.py."""
+    warnings = []
+    ggml_match = re.search(r'^\s*LLAMA_CPP_COMMIT\s*=\s*"([a-f0-9]{40})"', setup_text, re.M)
+    ggml_revision = ggml_match.group(1) if ggml_match else None
+    if ggml_revision is None:
+        warnings.append('LLAMA_CPP_COMMIT not found in upstream setup.py')
+
+    repo_match = re.search(rf'"{re.escape(model_repository)}"\s*:\s*"([a-f0-9]{{40}})"', setup_text)
+    model_revision = repo_match.group(1) if repo_match else None
+    if model_revision is None:
+        warnings.append(f'{model_repository} not found in HF_REVISIONS')
+
+    files = []
+    unchanged = True
+    for entry in base_files:
+        basename = Path(entry['path']).name
+        pin_match = re.search(rf'"{re.escape(basename)}"\s*:\s*\(\s*(\d+)\s*,\s*"([a-f0-9]{{64}})"\s*\)', setup_text)
+        item = copy.deepcopy(entry)
+        if pin_match:
+            size, sha256 = int(pin_match.group(1)), pin_match.group(2)
+            same = (size == int(entry['size']) and sha256 == entry['sha256'])
+            item['size'] = size
+            item['sha256'] = sha256
+            if same:
+                item['same_as'] = entry.get('same_as') or entry['path']
+            else:
+                item.pop('same_as', None)
+                unchanged = False
+        else:
+            unchanged = False
+            warnings.append(f'{basename} pin not found in upstream setup.py; kept base entry')
+        files.append(item)
+
+    pip_build_tools = None
+    if build_reqs_text is not None:
+        tools = [line.strip() for line in build_reqs_text.splitlines()
+                 if line.strip() and not line.strip().startswith('#')]
+        if tools:
+            pip_build_tools = tools
+
+    return {
+        'ggml_revision': ggml_revision,
+        'model_revision': model_revision,
+        'files': files,
+        'weights_unchanged': unchanged,
+        'pip_build_tools': pip_build_tools,
+        'warnings': warnings,
+    }
+
+
+def _default_root_path(host_facts, version):
+    roots = host_facts.get('strata_trial_roots') or {}
+    if roots:
+        sample = next(iter(roots.values()))
+        parent = str(Path(sample).parent)
+        base = Path(sample).name
+        if base.startswith('strata-'):
+            return f'{parent}/strata-{version}'
+        prefix = base.split('-strata-', 1)[0]
+        if '-strata-' in base and prefix:
+            return f'{parent}/{prefix}-strata-{version}'
+    project_root = host_facts.get('project_root', '/srv/agentiac')
+    return f'{project_root}/strata-{version}'
+
+
+def _base_target(graph, host, base_stem):
+    matches = [(name, spec) for name, spec in (graph.route.get('targets') or {}).items()
+               if spec.get('node') == host and spec.get('backend') == base_stem]
+    if matches:
+        return matches[0]
+    host_targets = [(name, spec) for name, spec in (graph.route.get('targets') or {}).items()
+                    if spec.get('node') == host]
+    if host_targets:
+        return host_targets[0]
+    raise SystemExit(f'gateway/local-coder.json has no target for {host} to clone route settings from')
+
+
+def draft_upgrade(graph, host, version, base_backend=None, revision=None, context=None,
+                  root_path=None, setup_file=None, build_reqs=None):
+    """Build a complete candidate declaration set for VERSION on HOST without writing any file."""
+    if host not in graph.nodes:
+        raise SystemExit(f'{host} is not a host in infra/inventory.yml')
+    host_facts = graph.nodes[host]
+    base_stem = base_backend or host_facts.get('strata_backend') or host_facts.get('strata_default_backend')
+    if not base_stem:
+        raise SystemExit(f'{host} has no strata_backend or strata_default_backend; pass --from BACKEND')
+    base_manifest = manifest_for(graph, base_stem)
+    resolved_base_stem = name_of(graph, base_manifest)
+    if host not in (base_manifest.get('workers') or {}):
+        raise SystemExit(f'backends/{resolved_base_stem}.json does not name {host} in workers')
+
+    rev, layout_kind, setup_text, reqs_text = fetch_strata_upstream(
+        base_manifest['repository'], version, revision=revision, setup_file=setup_file, build_reqs=build_reqs,
+    )
+    parsed = parse_strata_setup(setup_text, base_manifest['model_repository'], base_manifest['files'], reqs_text)
+
+    candidate = copy.deepcopy(base_manifest)
+    candidate['source_version'] = str(version)
+    candidate['source_revision'] = rev
+    if parsed['ggml_revision']:
+        candidate['ggml_revision'] = parsed['ggml_revision']
+    if parsed['model_revision']:
+        candidate['model_revision'] = parsed['model_revision']
+    candidate['files'] = parsed['files']
+    if parsed['pip_build_tools']:
+        candidate['pip_build_tools'] = parsed['pip_build_tools']
+    candidate['workers'] = {host: copy.deepcopy(base_manifest['workers'][host])}
+    if context is not None:
+        candidate['context'] = int(context)
+        contexts = list(candidate.get('contexts') or [candidate['context']])
+        if candidate['context'] not in contexts:
+            contexts.insert(0, candidate['context'])
+        candidate['contexts'] = contexts
+
+    stem = backend_names.derived(candidate)
+    if not stem:
+        raise SystemExit(f'cannot derive canonical backend name from drafted manifest for {version}')
+    candidate['id'] = stem
+    weight_note = 'weights unchanged' if parsed['weights_unchanged'] else 'weights changed'
+    candidate['status'] = f'candidate Strata {version} on {host} (drafted from {resolved_base_stem}; {weight_note})'
+
+    chosen_root = root_path or _default_root_path(host_facts, version)
+    ctx = candidate['context']
+    _, base_target_spec = _base_target(graph, host, resolved_base_stem)
+    target_spec = copy.deepcopy(base_target_spec)
+    target_spec['backend'] = stem
+    target_spec['context_window'] = ctx
+    target_name = f'{host}-{stem}-{ctx // 1024}k'
+
+    retention_entry = {
+        'backend': stem,
+        'path': chosen_root,
+        'class': 'persistent',
+        'form': 'full',
+        'reason': f'candidate Strata {version} drafted from {resolved_base_stem} ({weight_note})',
+    }
+    reuse = reuse_candidates(graph, host, candidate)
+    return {
+        'host': host,
+        'version': str(version),
+        'revision': rev,
+        'layout': layout_kind,
+        'base_backend': resolved_base_stem,
+        'backend': stem,
+        'manifest': candidate,
+        'root_key': str(version),
+        'root_path': chosen_root,
+        'target_name': target_name,
+        'target_spec': target_spec,
+        'retention_entry': retention_entry,
+        'weights_unchanged': parsed['weights_unchanged'],
+        'warnings': parsed['warnings'],
+        'reuse': reuse,
+    }
+
+
+def _insert_inventory_root(text, host, key, root_path):
+    lines = text.splitlines(keepends=True)
+    host_re = re.compile(rf'^(\s+){re.escape(host)}:\s*(?:#.*)?$')
+    host_idx = next((i for i, line in enumerate(lines) if host_re.match(line)), None)
+    if host_idx is None:
+        raise SystemExit(f'host {host} not found in infra/inventory.yml')
+    host_indent = len(host_re.match(lines[host_idx]).group(1))
+
+    end_idx = len(lines)
+    roots_idx = None
+    roots_indent = None
+    for i in range(host_idx + 1, len(lines)):
+        stripped = lines[i].strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        indent = len(lines[i]) - len(lines[i].lstrip(' '))
+        if indent <= host_indent:
+            end_idx = i
+            break
+        if re.match(r'^\s+strata_trial_roots:\s*(\{\})?\s*(?:#.*)?$', lines[i]):
+            roots_idx = i
+            roots_indent = indent
+
+    if roots_idx is None:
+        pad = ' ' * (host_indent + 2)
+        block = [f'{pad}strata_trial_roots:\n', f'{pad}  "{key}": {root_path}\n']
+        return ''.join(lines[:end_idx] + block + lines[end_idx:])
+
+    if re.match(r'^\s+strata_trial_roots:\s*\{\}\s*(?:#.*)?$', lines[roots_idx]):
+        lines[roots_idx] = re.sub(r'\s*\{\}', '', lines[roots_idx])
+        entry_pad = ' ' * (roots_indent + 2)
+        lines.insert(roots_idx + 1, f'{entry_pad}"{key}": {root_path}\n')
+        return ''.join(lines)
+
+    insert_at = roots_idx + 1
+    entry_indent = roots_indent + 2
+    for i in range(roots_idx + 1, end_idx):
+        stripped = lines[i].strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        indent = len(lines[i]) - len(lines[i].lstrip(' '))
+        if indent <= roots_indent:
+            break
+        entry_indent = indent
+        insert_at = i + 1
+    lines.insert(insert_at, f'{" " * entry_indent}"{key}": {root_path}\n')
+    return ''.join(lines)
+
+
+def _insert_retention_candidate(text, host, entry):
+    lines = text.splitlines(keepends=True)
+    host_re = re.compile(rf'^{re.escape(host)}:\s*(?:#.*)?$')
+    host_idx = next((i for i, line in enumerate(lines) if host_re.match(line)), None)
+    if host_idx is None:
+        raise SystemExit(f'host {host} not found in infra/retention.yml')
+
+    end_idx = len(lines)
+    cand_idx = None
+    cand_indent = None
+    for i in range(host_idx + 1, len(lines)):
+        stripped = lines[i].strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        indent = len(lines[i]) - len(lines[i].lstrip(' '))
+        if indent == 0:
+            end_idx = i
+            break
+        if re.match(r'^\s+candidate:\s*(\[\])?\s*(?:#.*)?$', lines[i]):
+            cand_idx = i
+            cand_indent = indent
+
+    if cand_idx is None:
+        raise SystemExit(f'candidate section not found for {host} in infra/retention.yml')
+
+    item_lines = yaml.safe_dump([entry], sort_keys=False).splitlines(keepends=True)
+    if re.match(r'^\s+candidate:\s*\[\]\s*(?:#.*)?$', lines[cand_idx]):
+        lines[cand_idx] = re.sub(r'\s*\[\]', '', lines[cand_idx])
+        pad = ' ' * (cand_indent + 2)
+        block = [pad + line for line in item_lines]
+        return ''.join(lines[:cand_idx + 1] + block + lines[cand_idx + 1:])
+
+    insert_at = cand_idx + 1
+    for i in range(cand_idx + 1, end_idx):
+        stripped = lines[i].strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        indent = len(lines[i]) - len(lines[i].lstrip(' '))
+        if indent <= cand_indent:
+            break
+        insert_at = i + 1
+    pad = ' ' * (cand_indent + 2)
+    block = [pad + line for line in item_lines]
+    return ''.join(lines[:insert_at] + block + lines[insert_at:])
+
+
+def apply_draft(root, draft):
+    """Write the drafted declarations to ROOT, validate cross-file references, and roll back on any error."""
+    root = Path(root)
+    stem = draft['backend']
+    host = draft['host']
+    manifest_path = root / f'backends/{stem}.json'
+    inventory_path = root / 'infra/inventory.yml'
+    retention_path = root / 'infra/retention.yml'
+    route_path = root / 'gateway/local-coder.json'
+
+    if manifest_path.exists():
+        raise SystemExit(f'backends/{stem}.json already exists; refusing to overwrite')
+    current_graph = declared.load(root)
+    if draft['root_key'] in (current_graph.nodes[host].get('strata_trial_roots') or {}):
+        raise SystemExit(f"infra/inventory.yml {host} strata_trial_roots already has key {draft['root_key']!r}")
+    if draft['target_name'] in (current_graph.route.get('targets') or {}):
+        raise SystemExit(f"gateway/local-coder.json already declares target {draft['target_name']!r}")
+
+    originals = {p: p.read_text(encoding='utf-8') for p in (inventory_path, retention_path, route_path)}
+    try:
+        manifest_path.write_text(json.dumps(draft['manifest'], indent=2) + '\n', encoding='utf-8')
+        inventory_path.write_text(
+            _insert_inventory_root(originals[inventory_path], host, draft['root_key'], draft['root_path']),
+            encoding='utf-8',
+        )
+        retention_path.write_text(
+            _insert_retention_candidate(originals[retention_path], host, draft['retention_entry']),
+            encoding='utf-8',
+        )
+        route_data = json.loads(originals[route_path])
+        route_data['targets'][draft['target_name']] = draft['target_spec']
+        route_path.write_text(json.dumps(route_data, indent=2) + '\n', encoding='utf-8')
+
+        updated_graph = declared.load(root)
+        problems = declared.references(updated_graph)
+        if problems:
+            raise SystemExit('drafted declarations failed cross-file validation:\n' + '\n'.join(f'  {p}' for p in problems))
+    except BaseException:
+        if manifest_path.exists():
+            manifest_path.unlink()
+        for path, content in originals.items():
+            path.write_text(content, encoding='utf-8')
+        raise
+
+    written = [
+        str(manifest_path.relative_to(root)),
+        str(inventory_path.relative_to(root)),
+        str(retention_path.relative_to(root)),
+        str(route_path.relative_to(root)),
+    ]
+    from agentiac import catalog, model_names
+    compat_path = root / 'docs/compatibility.md'
+    if compat_path.exists():
+        compat_text = catalog.compatibility(root)
+        if compat_path.read_text(encoding='utf-8') != compat_text:
+            compat_path.write_text(compat_text, encoding='utf-8')
+            written.append(str(compat_path.relative_to(root)))
+    names_path = root / 'docs/model-names.md'
+    if names_path.exists():
+        names_text = model_names.documentation(updated_graph)
+        if names_path.read_text(encoding='utf-8') != names_text:
+            names_path.write_text(names_text, encoding='utf-8')
+            written.append(str(names_path.relative_to(root)))
+    return written

@@ -75,11 +75,46 @@ def main():
         step.add_argument('host', help='the host the upgrade is for')
         step.add_argument('--backend', required=True, metavar='ID', help='backends/ID.json')
         step.add_argument('--json', action='store_true', help='one JSON document instead of the lines')
+    draft_parser = sub.add_parser('draft', help='inspect upstream release and draft candidate declarations for HOST')
+    draft_parser.add_argument('host', help='the host the upgrade is for')
+    draft_parser.add_argument('--version', required=True, metavar='VER', help='upstream Strata version, e.g. 0.2.19')
+    draft_parser.add_argument('--from', dest='base_backend', metavar='ID', help='base backend manifest (default: host serving backend)')
+    draft_parser.add_argument('--revision', metavar='SHA', help='upstream 40-hex commit SHA (default: resolve tag vVER)')
+    draft_parser.add_argument('--context', type=int, metavar='N', help='override manifest context')
+    draft_parser.add_argument('--root-path', metavar='PATH', help='override worker trial root path')
+    draft_parser.add_argument('--setup-file', metavar='PATH', help='local setup.py path (offline/test)')
+    draft_parser.add_argument('--build-reqs', metavar='PATH', help='local requirements-build.txt path (offline/test)')
+    draft_parser.add_argument('--apply', action='store_true', help='write the drafted declarations (default: dry-run)')
+    draft_parser.add_argument('--json', action='store_true', help='one JSON document instead of the lines')
     args = parser.parse_args()
 
     graph = declared.load(ROOT)
     if args.host not in graph.nodes:
         raise SystemExit(f'{args.host} is not a host in infra/inventory.yml')
+    if args.action == 'draft':
+        draft = upgrade.draft_upgrade(
+            graph, args.host, args.version, base_backend=args.base_backend, revision=args.revision,
+            context=args.context, root_path=args.root_path, setup_file=args.setup_file, build_reqs=args.build_reqs,
+        )
+        written = upgrade.apply_draft(ROOT, draft) if args.apply else []
+        if args.json:
+            print(json.dumps({**draft, 'applied': args.apply, 'written': written}, indent=2))
+            return 0
+        print(f"draft {draft['backend']} on {draft['host']} (from {draft['base_backend']}):")
+        print(f"  revision       {draft['revision']} (layout: {draft['layout']})")
+        print(f"  ggml_revision  {draft['manifest'].get('ggml_revision')}")
+        print(f"  weights        {'unchanged (reusable)' if draft['weights_unchanged'] else 'changed'}")
+        print(f"  root           {draft['root_key']} -> {draft['root_path']}")
+        print(f"  target         {draft['target_name']}")
+        for w in draft['warnings']:
+            print(f"  warning        {w}")
+        if args.apply:
+            print('  written        ' + ', '.join(written))
+            cli = upgrade.cli_name()
+            print(f"  next           {cli} ops upgrade plan {draft['host']} --backend {draft['backend']}")
+        else:
+            print('  dry-run        no files written; re-run with --apply to write declarations')
+        return 0
     try:
         manifest = upgrade.manifest_for(graph, args.backend)
     except SystemExit as missing:

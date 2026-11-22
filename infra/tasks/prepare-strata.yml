@@ -9,7 +9,7 @@
       # serves_strata() says the same thing, and the two must not disagree about who may be prepared.
 - name: Read the manifest
   ansible.builtin.set_fact:
-    manifest: "{{ lookup('file', '../backends/' + backend_id + '.json') | from_json }}"
+    manifest: "{{ lookup('file', instance_root + '/backends/' + backend_id + '.json') | from_json }}"
 - name: Require a manifest for this host
   ansible.builtin.assert:
     that: inventory_hostname in manifest.workers
@@ -56,12 +56,12 @@
     mode: '0750'
 - name: Copy the manifest
   ansible.builtin.copy:
-    src: '../backends/{{ backend_id }}.json'
+    src: '{{ instance_root }}/backends/{{ backend_id }}.json'
     dest: '{{ root }}/backends/{{ backend_id }}.json'
     mode: '0640'
 - name: Read the preparation state
   ansible.builtin.command:
-    argv: [cat, '{{ root }}/prepare-{{ backend_id }}-state.json']
+    argv: [cat, '{{ root }}/prepare-{{ manifest.id }}-state.json']
   register: state
   check_mode: false
   failed_when: false

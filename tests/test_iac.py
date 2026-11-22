@@ -92,8 +92,6 @@ class SchemaTests(unittest.TestCase):
         for path in candidates:
             with self.subTest(path.name):
                 errs = [e.message for e in validator.iter_errors(json.loads(path.read_text()))]
-                if SITE == ROOT / 'examples/site' and path.name == 'strata-0.2.12-tiny-coder-gguf-q4_k_m.json':
-                    errs = [m for m in errs if "does not match '^[a-z0-9.-]+$'" not in m]
                 self.assertEqual(errs, [])
 
     def test_model_profiles_match_their_schema(self):
@@ -273,6 +271,13 @@ class PlaybookTests(unittest.TestCase):
         for template in (ROOT / 'infra/templates').glob('*.j2'):
             with self.subTest(template.name):
                 self.assertIn(template.stem, sources)
+
+    def test_playbooks_read_site_files_from_instance_root_not_parent_dir(self):
+        for path in PLAYBOOKS + TASK_FILES:
+            with self.subTest(path.name):
+                self.assertIsNone(re.search(r'\.\./(?:backends|profiles|secrets)/', path.read_text()))
+        prepare_strata = (ROOT / 'infra/tasks/prepare-strata.yml').read_text()
+        self.assertIn('prepare-{{ manifest.id }}-state.json', prepare_strata)
 
 
 if __name__ == '__main__':

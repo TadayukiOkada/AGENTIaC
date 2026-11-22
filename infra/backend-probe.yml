@@ -1,6 +1,8 @@
 - name: Prepare isolated backend compatibility probe
   hosts: workers
   gather_facts: false
+  vars:
+    instance_root: "{{ lookup('ansible.builtin.env', 'AGENTIAC_ROOT') | default((inventory_dir | default(playbook_dir)) | dirname, true) }}"
   tasks:
     - name: Require an explicit host
       ansible.builtin.import_tasks: tasks/require-limit.yml
@@ -16,7 +18,7 @@
         mode: '0750'
     - name: Copy reviewed backend manifest
       ansible.builtin.copy:
-        src: '../backends/{{ backend_probe }}.json'
+        src: '{{ instance_root }}/backends/{{ backend_probe }}.json'
         dest: '{{ project_root }}/backend-manifests/{{ backend_probe }}.json'
         mode: '0640'
     - name: Copy isolated probe

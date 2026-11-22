@@ -1,6 +1,8 @@
 - name: Download and verify model directly on workers
   hosts: workers
   gather_facts: false
+  vars:
+    instance_root: "{{ lookup('ansible.builtin.env', 'AGENTIAC_ROOT') | default((inventory_dir | default(playbook_dir)) | dirname, true) }}"
   tasks:
     - name: Require an explicit host
       ansible.builtin.import_tasks: tasks/require-limit.yml
@@ -11,7 +13,7 @@
           - model is match('^[a-z0-9-]+$')
     - name: Load model manifest
       ansible.builtin.set_fact:
-        manifest: "{{ lookup('file', '../profiles/' + model + '.json') | from_json }}"
+        manifest: "{{ lookup('file', instance_root + '/profiles/' + model + '.json') | from_json }}"
     - name: Create isolated storage
       ansible.builtin.file:
         path: '{{ project_root }}/{{ item }}'
@@ -25,7 +27,7 @@
         mode: '0750'
     - name: Copy pinned profile
       ansible.builtin.copy:
-        src: '../profiles/{{ model }}.json'
+        src: '{{ instance_root }}/profiles/{{ model }}.json'
         dest: '{{ project_root }}/profiles/{{ model }}.json'
         mode: '0640'
     - name: Inspect download completion

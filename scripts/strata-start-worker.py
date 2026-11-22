@@ -159,17 +159,25 @@ def load_backend(path):
     return backend
 
 
+def terminal_root(source):
+    """Where serve/server.py lives inside SOURCE: SOURCE/terminal/ on 0.2.16+, else SOURCE."""
+    source = Path(source)
+    nested = source / 'terminal'
+    return nested if (nested / 'serve' / 'server.py').is_file() else source
+
+
 def serve_command(root, runtime, port, properties, unit):
     """How the serve process is launched: confined HOME and Strata settings, and no acquisition at start
     (upstream 0.2.8 gates install/build/download behind an interactive acquire; a start must never do any)."""
     account = pwd.getpwuid(os.getuid()).pw_name   # the service account control logged in as (D8.2)
+    app_root = terminal_root(root / 'source')
     return ['sudo', '-n', 'systemd-run', f'--unit={unit}', f'--uid={account}',
             *properties, '--setenv=HOME=' + str(root / 'home'),
             '--setenv=XDG_CONFIG_HOME=' + str(root / 'home' / '.config'),
             '--setenv=STRATA_SETTINGS_FILE=' + str(root / 'home' / 'strata-settings.json'),
             '--setenv=STRATA_NO_ACQUIRE=1',
-            '--setenv=PYTHONDONTWRITEBYTECODE=1', '--working-directory=' + str(root / 'source'),
-            str(root / '.venv/bin/python'), str(root / 'source/serve/server.py'),
+            '--setenv=PYTHONDONTWRITEBYTECODE=1', '--working-directory=' + str(app_root),
+            str(root / '.venv/bin/python'), str(app_root / 'serve/server.py'),
             '--engine', 'strata', '--host', '127.0.0.1', '--port', str(port), '--config', str(runtime)]
 
 
@@ -525,7 +533,7 @@ def main():
         if not Path(path).is_relative_to(root):   # a start serves the weights this root prepared, never another's
             raise RuntimeError('prepared config names a model file outside the root: ' + path)
     import sys
-    sys.path.insert(0, str(root / 'source'))
+    sys.path.insert(0, str(terminal_root(root / 'source')))
     from serve.server import clean_shared_defaults
     clean_shared_defaults({'reasoning_effort': 'none'})
     key_file = root / f'api-key-{args.attempt}.env'

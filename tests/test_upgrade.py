@@ -637,5 +637,118 @@ class DrafterTrial(SyntheticSiteTestCase):
                         reading['blockers'])
 
 
+class DraftUpgradeTests(SyntheticSiteTestCase):
+    SETUP_UNCHANGED = (
+        'HF_REVISIONS = {\n'
+        '    "synth/Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "' + '0' * 40 + '",\n'
+        '}\n'
+        'LLAMA_CPP_COMMIT = "' + '1' * 40 + '"\n'
+        'FILES = {\n'
+        '    "qwen3.8-flash-next-iq3_xxs-00001-of-00002.gguf":\n'
+        '        (40000000000, "' + 'a' * 64 + '"),\n'
+        '    "qwen3.8-flash-next-iq3_xxs-00002-of-00002.gguf":\n'
+        '        (34000000000, "' + 'b' * 64 + '"),\n'
+        '}\n'
+    )
+    BUILD_REQS = '# comment\ncmake==4.4.3\nninja==1.13.2\n'
+
+    def _add_repository_fields(self):
+        model_repos = {
+            'strata-0.2.10-qfn-gsq-rco-iq3_xxs': 'synth/Qwen3.8-Flash-Next-GSQ-RCO-GGUF',
+            'strata-0.2.12-qfn-gsq-rco-iq3_xxs': 'synth/Qwen3.8-Flash-Next-GSQ-RCO-GGUF',
+            'strata-0.2.12-qfn-gsq-rco-iq3_xxs-dflash2': 'synth/Qwen3.8-Flash-Next-GSQ-RCO-GGUF',
+            'strata-0.2.8-qfn-gyro-m-tq2_0': 'synth/Qwen3.8-Flash-Next-Gyro-GGUF',
+            'strata-0.2.11-qfn-gyro-m-tq2_0': 'synth/Qwen3.8-Flash-Next-Gyro-GGUF',
+            'strata-0.2.11-qfn-ud-iq3_xxs': 'synth/Qwen3.8-Flash-Next-GGUF',
+        }
+        for stem, repo in model_repos.items():
+            p = self.root / f'backends/{stem}.json'
+            data = json.loads(p.read_text())
+            data['repository'] = 'https://github.com/synth/Strata'
+            data['model_repository'] = repo
+            if 'gyro' in stem:
+                data['model'] = 'Gyro-M'
+            p.write_text(json.dumps(data, indent=2))
+        ret_path = self.root / 'infra/retention.yml'
+        ret = yaml.safe_load(ret_path.read_text())
+        for host in ('workera', 'workerb', 'workerc', 'workere'):
+            ret[host]['areas'] = [{'path': '/srv/agentiac', 'class': 'persistent', 'reason': 'roots'}]
+        ret['workerd']['areas'] = [{'path': '/mnt/data', 'class': 'persistent', 'reason': 'roots'}]
+        ret_path.write_text(yaml.safe_dump(ret, sort_keys=False))
+        self.graph = declared.load(self.root)
+
+    def test_parse_strata_setup_handles_unchanged_and_changed_weights(self):
+        parsed = upgrade.parse_strata_setup(self.SETUP_UNCHANGED, 'synth/Qwen3.8-Flash-Next-GSQ-RCO-GGUF', IQ3, self.BUILD_REQS)
+        self.assertTrue(parsed['weights_unchanged'])
+        self.assertEqual(parsed['ggml_revision'], '1' * 40)
+        self.assertEqual(parsed['pip_build_tools'], ['cmake==4.4.3', 'ninja==1.13.2'])
+        self.assertEqual(parsed['files'][0]['same_as'], IQ3[0]['path'])
+
+        changed_setup = self.SETUP_UNCHANGED.replace('"' + 'a' * 64 + '"', '"' + 'e' * 64 + '"')
+        changed = upgrade.parse_strata_setup(changed_setup, 'synth/Qwen3.8-Flash-Next-GSQ-RCO-GGUF', IQ3)
+        self.assertFalse(changed['weights_unchanged'])
+        self.assertNotIn('same_as', changed['files'][0])
+        self.assertIn('same_as', changed['files'][1])
+
+    def test_draft_dry_run_writes_nothing_and_apply_creates_valid_declarations(self):
+        self._add_repository_fields()
+        inv_path = self.root / 'infra/inventory.yml'
+        ret_path = self.root / 'infra/retention.yml'
+        inv_path.write_text('# inventory comment\n' + inv_path.read_text())
+        ret_path.write_text('# retention comment\n' + ret_path.read_text())
+        self.graph = declared.load(self.root)
+
+        setup_dir = self.root / 'upstream/terminal'
+        setup_dir.mkdir(parents=True)
+        (setup_dir / 'setup.py').write_text(self.SETUP_UNCHANGED)
+        (setup_dir / 'requirements-build.txt').write_text(self.BUILD_REQS)
+
+        draft = upgrade.draft_upgrade(
+            self.graph, 'workerb', '0.2.19', revision='2' * 40,
+            setup_file=setup_dir / 'setup.py', build_reqs=setup_dir / 'requirements-build.txt',
+        )
+        self.assertEqual(draft['backend'], 'strata-0.2.19-qfn-gsq-rco-iq3_xxs')
+        self.assertEqual(draft['layout'], 'terminal')
+        self.assertTrue(draft['weights_unchanged'])
+        self.assertFalse((self.root / 'backends/strata-0.2.19-qfn-gsq-rco-iq3_xxs.json').exists())
+
+        written = upgrade.apply_draft(self.root, draft)
+        self.assertEqual(len(written), 4)
+        self.assertIn('# inventory comment', inv_path.read_text())
+        self.assertIn('# retention comment', ret_path.read_text())
+
+        updated = declared.load(self.root)
+        self.assertEqual(declared.references(updated), [])
+        self.assertEqual(updated.route['default'], 'workerb-strata-0.2.12-qfn-gsq-rco-iq3_xxs-256k')
+
+        reading = upgrade.plan(updated, 'workerb', 'strata-0.2.19-qfn-gsq-rco-iq3_xxs')
+        self.assertEqual(reading['blockers'], [])
+        prep_cmd = [s['what'] for s in reading['steps'] if s['step'] == 'prepare'][0]
+        self.assertIn('--reuse-root /srv/agentiac/strata-0.2.12', prep_cmd)
+        self.assertNotIn('--reuse-declared', prep_cmd)
+
+        with self.assertRaises(SystemExit):
+            upgrade.apply_draft(self.root, draft)
+
+    def test_apply_draft_rolls_back_all_files_on_validation_error(self):
+        self._add_repository_fields()
+        setup_dir = self.root / 'upstream/terminal'
+        setup_dir.mkdir(parents=True)
+        (setup_dir / 'setup.py').write_text(self.SETUP_UNCHANGED)
+        draft = upgrade.draft_upgrade(
+            self.graph, 'workerb', '0.2.19', revision='2' * 40, setup_file=setup_dir / 'setup.py',
+        )
+        draft['target_spec']['source_alias'] = 'missing-alias'
+        before_inv = (self.root / 'infra/inventory.yml').read_text()
+        before_ret = (self.root / 'infra/retention.yml').read_text()
+        before_route = (self.root / 'gateway/local-coder.json').read_text()
+        with self.assertRaises(SystemExit):
+            upgrade.apply_draft(self.root, draft)
+        self.assertFalse((self.root / 'backends/strata-0.2.19-qfn-gsq-rco-iq3_xxs.json').exists())
+        self.assertEqual((self.root / 'infra/inventory.yml').read_text(), before_inv)
+        self.assertEqual((self.root / 'infra/retention.yml').read_text(), before_ret)
+        self.assertEqual((self.root / 'gateway/local-coder.json').read_text(), before_route)
+
+
 if __name__ == '__main__':
     unittest.main()

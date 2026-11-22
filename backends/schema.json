@@ -4,7 +4,7 @@
   "type": "object",
   "required": ["id", "repository", "source_revision", "source_version", "model_repository", "model_revision", "files", "workers", "context", "status"],
   "properties": {
-    "id": {"type": "string", "pattern": "^[a-z0-9.-]+$"},
+    "id": {"type": "string", "pattern": "^[a-z0-9._-]+$"},
     "repository": {"type": "string", "pattern": "^https://"},
     "source_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
     "ggml_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},

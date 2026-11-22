@@ -256,6 +256,22 @@ def ops(args):
         return script('retire.py', stage, args.host, '--backend', args.backend,
                       *['--dry-run'] * args.check, *['--json'] * args.json)
     if action == 'upgrade':
+        if args.upgrade_action == 'draft':
+            argv = ['draft', args.host, '--version', args.version]
+            if args.base_backend:
+                argv += ['--from', args.base_backend]
+            if args.revision:
+                argv += ['--revision', args.revision]
+            if args.context is not None:
+                argv += ['--context', str(args.context)]
+            if args.root_path:
+                argv += ['--root-path', args.root_path]
+            if args.setup_file:
+                argv += ['--setup-file', args.setup_file]
+            if args.build_reqs:
+                argv += ['--build-reqs', args.build_reqs]
+            argv += ['--apply'] * args.apply + ['--json'] * args.json
+            return script('upgrade.py', *argv)
         return script('upgrade.py', args.upgrade_action, args.host, '--backend', args.backend,
                       *['--json'] * args.json)
     if action == 'preflight':
@@ -1163,6 +1179,17 @@ def build_parser(former=True):
         p.add_argument('host', choices=hosts)
         p.add_argument('--backend', required=True, metavar='ID', help='backends/ID.json')
         p.add_argument('--json', action='store_true', help='one JSON document instead of the lines')
+    p = u.add_parser('draft', help='inspect upstream release and draft candidate declarations for HOST')
+    p.add_argument('host', choices=hosts)
+    p.add_argument('--version', required=True, metavar='VER', help='upstream Strata version, e.g. 0.2.19')
+    p.add_argument('--from', dest='base_backend', metavar='ID', help='base backend manifest (default: host serving backend)')
+    p.add_argument('--revision', metavar='SHA', help='upstream 40-hex commit SHA (default: resolve tag vVER)')
+    p.add_argument('--context', type=int, metavar='N', help='override manifest context')
+    p.add_argument('--root-path', metavar='PATH', help='override worker trial root path')
+    p.add_argument('--setup-file', metavar='PATH', help='local setup.py path (offline/test)')
+    p.add_argument('--build-reqs', metavar='PATH', help='local requirements-build.txt path (offline/test)')
+    p.add_argument('--apply', action='store_true', help='write the drafted declarations (default: dry-run)')
+    p.add_argument('--json', action='store_true', help='one JSON document instead of the lines')
     o.add_parser('drift', help='report where the live system differs from this checkout').add_argument(
         '--json', action='store_true', help='one JSON document instead of the lines')
     q = o.add_parser('eval-image', help='the benchmark and suite images against what they are built from (IP-13)')
