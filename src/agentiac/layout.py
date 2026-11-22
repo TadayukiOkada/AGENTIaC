@@ -24,9 +24,11 @@ CORE_FILES = frozenset({
     'benchmarks/repository-task.example.json'})
 CORE_PREFIXES = ('src/', 'scripts/', 'tests/', 'bin/', 'runtime/', 'dashboard/', '.github/',
                  'infra/', 'gateway/', 'agents/pi/extensions/', 'docs/adr/', 'examples/')   # examples/site: D8.3
-# Documents that name no site. The others (operations, usage, architecture, ...) stay with this site until M10
-# rewrites them with synthetic names (M9 review, decision 5).
-CORE_DOCS = frozenset({'README.md', 'development.md', 'agents.md', 'documentation-guide.md'})
+# Documents rewritten without site literals. Remaining guides (usage, operations, dashboard-design, manual-ja) stay
+# with the site until ported in M10.
+CORE_DOCS = frozenset({
+    'README.md', 'architecture.md', 'testing.md', 'model-naming.md', 'troubleshooting.md', 'dashboard.md',
+    'development.md', 'agents.md', 'documentation-guide.md'})
 # Class C tests (D6.6): every test module that does not run against examples/site (tests/example-site.txt), and the
 # fixtures and harnesses only they use. They use this site as their fixture, so they stay with it until M10 ports them;
 # tests/test_layout.py keeps this list the exact complement of tests/example-site.txt.

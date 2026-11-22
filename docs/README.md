@@ -9,8 +9,11 @@ machine declarations, generated model tables and operational records live in its
 |---|---|
 | New user: how do I bootstrap the core or create a site? | [Root README](../README.md), [Create your own site](../README.md#create-your-own-site), [Example site](../examples/site/README.md) |
 | Developer: how do I run tests, linters and publication checks? | [Development and control setup](development.md) |
-| Suite user: how are coding-agent frontends pinned and probed? | [Agent frontend reference](agents.md) |
-| Architect: what are the core design rules? | [Architecture decisions (ADR 0001–0009)](adr/README.md) |
+| Architect: what is the system structure and where are the ADRs? | [Architecture](architecture.md), [Architecture decisions (ADR 0001–0009)](adr/README.md) |
+| Suite user: how are coding-agent frontends, evaluations and evidence run? | [Evaluation and validation](testing.md), [Agent frontend reference](agents.md) |
+| Model / route maintainer: how are targets, backends and aliases named? | [Model naming](model-naming.md) |
+| Dashboard operator: how is the local management UI installed and operated? | [Local management dashboard](dashboard.md) |
+| Operator: how do I diagnose GPU, network, build or journal issues? | [Troubleshooting](troubleshooting.md) |
 | Maintainer: how is documentation kept consistent? | [Documentation maintenance](documentation-guide.md) |
 
 ## Authority map
@@ -18,6 +21,7 @@ machine declarations, generated model tables and operational records live in its
 | Category | Canonical scope / location |
 |---|---|
 | Core CLI, lifecycle, Suite and management API | This repository (`src/agentiac/`, `scripts/`, `infra/`, `gateway/`, `dashboard/`, `benchmarks/`, `runtime/`) |
+| Core architecture, evaluation, naming, dashboard and troubleshooting guides | [`architecture.md`](architecture.md), [`testing.md`](testing.md), [`model-naming.md`](model-naming.md), [`dashboard.md`](dashboard.md), [`troubleshooting.md`](troubleshooting.md), [`development.md`](development.md), [`agents.md`](agents.md) |
 | Accepted core architecture decisions | [`docs/adr/README.md`](adr/README.md) (ADR 0001–0009) |
 | Minimal valid site contract | [`examples/site/`](../examples/site/README.md), validated in CI by `make example-check` |
 | One installation's hosts, pins, routes and retention ledger | The site repository (`infra/inventory.yml`, `infra/components.yml`, `infra/retention.yml`, `gateway/`, `backends/`, `profiles/`, `agents/`, `evidence/`) |
