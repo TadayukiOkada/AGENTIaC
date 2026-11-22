@@ -7,19 +7,25 @@
 # (class C, despite the pattern); the tests that load scripts/archive/ read the site's archive (class C, D8.1).
 test_aggregate
 test_audit
+test_claims
 test_cli
 test_client
+test_connectivity_watch
 test_context_probe
 test_declared_settings
 test_evaluation_watch
 test_example_site
+test_former_names
 test_gateway_ports
 test_graders
 test_hygiene
 test_layout
 test_loop_guard
+test_mutation
 test_netwatch
+test_ondemand
 test_paths
+test_pathwatch
 test_pi_pin
 test_protocol
 test_publish_scan
@@ -30,11 +36,13 @@ test_repo_budget
 test_repo_output_limit
 test_repo_recovery
 test_restore
+test_retire_worker
 test_route_deploy
 test_secrets
 test_serve_profile
 test_site_literals
 test_state
 test_strata_watch
+test_telemetry
 test_dashboard_tls .venv-dashboard/bin/python
 test_probe_worker .venv-dashboard/bin/python
