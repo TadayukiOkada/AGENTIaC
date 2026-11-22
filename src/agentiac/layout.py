@@ -46,7 +46,7 @@ SITE_TEST_MODULES = frozenset({
     'test_strata_context', 'test_strata_prepare', 'test_strata_scope',
     'test_tool_loop_audit', 'test_tool_loop_reduction'})
 SITE_TESTS = frozenset({f'tests/{name}.py' for name in SITE_TEST_MODULES} | {
-    'tests/records.py', 'tests/skills_harness.mjs', 'dashboard/tests/smoke.mjs'})
+    'tests/records.py', 'tests/skills_harness.mjs'})
 REVIEW_PREFIXES = ()                 # M9 settled the last ones (agents/skills/, agents/jetson-skills.json): site
 REVIEW_FILES = frozenset()
 
