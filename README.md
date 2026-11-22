@@ -4,8 +4,10 @@ The control host runs the CLI, a private loopback gateway, agent frontends and e
 worker GPUs serve pinned models over SSH forwards. Dedicated workers are the default; shared workers
 are claimed for a stated purpose and released without disturbing their owner's workloads.
 
-Start with the [documentation index](docs/README.md), the [development guide](docs/development.md),
-the [agent frontend reference](docs/agents.md) and the [example site](examples/site/README.md).
+Start with the [documentation index](docs/README.md), [daily use](docs/usage.md),
+[operations](docs/operations.md), [architecture](docs/architecture.md),
+the [development guide](docs/development.md), the [agent frontend reference](docs/agents.md),
+the [Japanese quick guide](docs/manual-ja.md), and the [example site](examples/site/README.md).
 
 ## Control environment
 

@@ -2,7 +2,8 @@
 
 Read-only management API, React UI, foreground minimal-probe worker, offline state
 snapshots/credentials, and local user-service release/plan tooling. See
-[Architecture](architecture.md#local-management-dashboard) for module boundaries.
+[Architecture](architecture.md#local-management-dashboard) and
+[Management dashboard design](dashboard-design.md) for module boundaries and design contracts.
 
 ## Install and start locally
 
@@ -180,7 +181,7 @@ contract with `scripts/dashboard-schema.py` after changing DTOs or routes.
   preserving missing references as `exists: false`.
 - **Engines (`GET /api/v1/engines[/{id}]`)**: combines backend pins, route targets,
   retention, and `backends/lifecycle.yml` metadata (`current` reflects the active `local-coder`
-  target, not a live worker probe).
+  target, not a live worker probe; see [Engines lifecycle UX](dashboard-design.md#engines-lifecycle-ux)).
 - **Deployments (`GET /api/v1/deployments`)**: reads local `artifacts/deployed.json`, route
   state/logs, and dashboard deployment history (`AGENTIAC_DASHBOARD_HISTORY`, default
   `private/dashboard-deployment`), returning allowlisted metadata only.

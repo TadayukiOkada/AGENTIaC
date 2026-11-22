@@ -8,12 +8,13 @@ machine declarations, generated model tables and operational records live in its
 | Reader / question | Read |
 |---|---|
 | New user: how do I bootstrap the core or create a site? | [Root README](../README.md), [Create your own site](../README.md#create-your-own-site), [Example site](../examples/site/README.md) |
+| Daily user: how do I run coding sessions, worktrees, routing and checks? | [Daily use](usage.md), [Japanese quick guide](manual-ja.md) |
+| Operator: how do I deploy, back up, restore, retire roots and troubleshoot? | [Operations](operations.md), [Troubleshooting](troubleshooting.md) |
 | Developer: how do I run tests, linters and publication checks? | [Development and control setup](development.md) |
 | Architect: what is the system structure and where are the ADRs? | [Architecture](architecture.md), [Architecture decisions (ADR 0001–0009)](adr/README.md) |
 | Suite user: how are coding-agent frontends, evaluations and evidence run? | [Evaluation and validation](testing.md), [Agent frontend reference](agents.md) |
 | Model / route maintainer: how are targets, backends and aliases named? | [Model naming](model-naming.md) |
-| Dashboard operator: how is the local management UI installed and operated? | [Local management dashboard](dashboard.md) |
-| Operator: how do I diagnose GPU, network, build or journal issues? | [Troubleshooting](troubleshooting.md) |
+| Dashboard operator: how is the local management UI designed, installed and operated? | [Local management dashboard](dashboard.md), [Management dashboard design](dashboard-design.md) |
 | Maintainer: how is documentation kept consistent? | [Documentation maintenance](documentation-guide.md) |
 
 ## Authority map
@@ -21,7 +22,7 @@ machine declarations, generated model tables and operational records live in its
 | Category | Canonical scope / location |
 |---|---|
 | Core CLI, lifecycle, Suite and management API | This repository (`src/agentiac/`, `scripts/`, `infra/`, `gateway/`, `dashboard/`, `benchmarks/`, `runtime/`) |
-| Core architecture, evaluation, naming, dashboard and troubleshooting guides | [`architecture.md`](architecture.md), [`testing.md`](testing.md), [`model-naming.md`](model-naming.md), [`dashboard.md`](dashboard.md), [`troubleshooting.md`](troubleshooting.md), [`development.md`](development.md), [`agents.md`](agents.md) |
+| Core user, operations, architecture, naming, dashboard and troubleshooting guides | [`usage.md`](usage.md), [`operations.md`](operations.md), [`architecture.md`](architecture.md), [`testing.md`](testing.md), [`model-naming.md`](model-naming.md), [`dashboard.md`](dashboard.md), [`dashboard-design.md`](dashboard-design.md), [`troubleshooting.md`](troubleshooting.md), [`development.md`](development.md), [`agents.md`](agents.md), [`manual-ja.md`](manual-ja.md) |
 | Accepted core architecture decisions | [`docs/adr/README.md`](adr/README.md) (ADR 0001–0009) |
 | Minimal valid site contract | [`examples/site/`](../examples/site/README.md), validated in CI by `make example-check` |
 | One installation's hosts, pins, routes and retention ledger | The site repository (`infra/inventory.yml`, `infra/components.yml`, `infra/retention.yml`, `gateway/`, `backends/`, `profiles/`, `agents/`, `evidence/`) |
