@@ -31,7 +31,7 @@ class Classification(unittest.TestCase):
                                ('docs/usage.md', 'site'), ('docs/development.md', 'core'),
                                ('docs/adr/0001-x.md', 'core'), ('docs/adr/0012-x.md', 'site'), ('docs/adr/0002-x.md', 'core'),
                                ('agents/skills/session-start/SKILL.md', 'site'), ('agents/jetson-skills.json', 'site'),
-                               ('tests/test_catalog.py', 'site'), ('tests/test_layout.py', 'core'),
+                               ('tests/test_catalog.py', 'core'), ('tests/test_eval_image.py', 'site'), ('tests/test_layout.py', 'core'),
                                ('tests/records.py', 'site'), ('dashboard/tests/smoke.mjs', 'site'),
                                ('secrets/gateway.env', 'site'), ('requirements-control.lock', 'core'),
                                ('LICENSE', 'core'), ('NOTICE', 'core'), ('benchmarks/Dockerfile', 'core'), ('benchmarks/context-probe.py', 'core'),

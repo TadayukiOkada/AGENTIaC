@@ -10,6 +10,7 @@ test_aggregate
 test_audit
 test_backend_names
 test_backup
+test_catalog
 test_chatgpt_auth
 test_claims
 test_cli
@@ -28,6 +29,7 @@ test_drift
 test_engine_catalog
 test_errors
 test_evaluation_watch
+test_evidence
 test_example_site
 test_failures
 test_former_names
@@ -85,6 +87,7 @@ test_task_key
 test_tasklog
 test_telemetry
 test_tensorfold_prepare
+test_updates
 test_upgrade
 test_dashboard_tls .venv-dashboard/bin/python
 test_jobs .venv-dashboard/bin/python
