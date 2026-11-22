@@ -20,6 +20,7 @@ test_dashboard_operations
 test_declared_settings
 test_doctor
 test_drift
+test_engine_catalog
 test_errors
 test_evaluation_watch
 test_example_site
@@ -68,4 +69,10 @@ test_telemetry
 test_tensorfold_prepare
 test_dashboard_tls .venv-dashboard/bin/python
 test_jobs .venv-dashboard/bin/python
+test_management .venv-dashboard/bin/python
+test_management_cache .venv-dashboard/bin/python
+test_management_contract .venv-dashboard/bin/python
+test_management_deployments .venv-dashboard/bin/python
+test_management_engines .venv-dashboard/bin/python
+test_management_relations .venv-dashboard/bin/python
 test_probe_worker .venv-dashboard/bin/python
