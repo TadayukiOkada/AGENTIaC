@@ -7,6 +7,7 @@
 # (class C, despite the pattern); the tests that load scripts/archive/ read the site's archive (class C, D8.1).
 test_aggregate
 test_audit
+test_backend_names
 test_backup
 test_chatgpt_auth
 test_claims
@@ -15,6 +16,7 @@ test_client
 test_command
 test_compaction_e2e
 test_compaction_guard
+test_components
 test_connectivity_watch
 test_context_probe
 test_dashboard_operations
@@ -33,6 +35,7 @@ test_gateway_ports
 test_graders
 test_hardware
 test_hygiene
+test_identities
 test_identity
 test_ladder
 test_layout
@@ -66,7 +69,9 @@ test_site_literals
 test_spark_tensorfold_worker
 test_state
 test_status_script
+test_storage
 test_strata_roots
+test_strata_start
 test_strata_watch
 test_suite
 test_task_key
