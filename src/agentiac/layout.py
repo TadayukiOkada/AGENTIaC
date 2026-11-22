@@ -11,14 +11,12 @@ STATE_PREFIXES = ('secrets/', 'artifacts/', 'private/')
 SITE_FILES = frozenset({
     'infra/inventory.yml', 'infra/components.yml', 'infra/retention.yml',
     'gateway/config.yaml', 'gateway/chatgpt.yaml', 'gateway/local-coder.json',
-    'agents/pi/models.json', 'agents/pi/router.json', 'agents/agents.yml', 'AGENTS.md', 'agents/jetson-skills.json',
-    'docs/adr/README.md'})
+    'agents/pi/models.json', 'agents/pi/router.json', 'agents/agents.yml', 'AGENTS.md', 'agents/jetson-skills.json'})
 # benchmarks/: this site's suite, graders and result records; its generic tools are CORE_FILES (D6.7 item 3, revised)
 SITE_PREFIXES = ('backends/', 'evidence/', 'scripts/archive/',  # the archive: provenance of this site's results (D8.1)
                  'benchmarks/', 'agents/skills/',
-                 # ADRs that record this site's hosts and history, by number: some of their file names name a host.
-                 # M10 ports them back as rewrites (M9 review, decision 5); the index goes with them.
-                 *(f'docs/adr/{number:04d}-' for number in (3, 4, 6, 7, 8, 10, 11, 12)))
+                 # ADRs 0001-0009 are core decisions; 0010-0012 record this site's hosts and hardware skills.
+                 *(f'docs/adr/{number:04d}-' for number in (10, 11, 12)))
 CORE_FILES = frozenset({
     'Makefile', 'pyproject.toml', 'LICENSE', 'NOTICE', '.gitleaks.toml', 'README.md', '.gitignore', '.ansible-lint', '.yamllint.yml',
     'profiles/schema.json', 'backends/schema.json', 'agents/pi/package.json', 'agents/pi/package-lock.json',
