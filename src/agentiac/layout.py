@@ -33,21 +33,21 @@ CORE_DOCS = frozenset({'README.md', 'development.md', 'agents.md', 'documentatio
 # fixtures and harnesses only they use. They use this site as their fixture, so they stay with it until M10 ports them;
 # tests/test_layout.py keeps this list the exact complement of tests/example-site.txt.
 SITE_TEST_MODULES = frozenset({
-    'test_adapters', 'test_archived_task_keys', 'test_bfcl_target',
+    'test_archived_task_keys', 'test_bfcl_target',
     'test_catalog', 'test_claude_repository', 'test_codex_frontend',
     'test_codex_repository',
     'test_dashboard_release_layout', 'test_declared',
     'test_eval_image', 'test_evidence',
     'test_glm_monitor',
-    'test_health_scope', 'test_iac',
-    'test_local_coder', 'test_model_names',
+    'test_health_scope',
+    'test_local_coder',
     'test_pi_repository',
     'test_retention', 'test_restore_document',
-    'test_short_aliases', 'test_skills',
+    'test_skills',
     'test_strata_context', 'test_strata_prepare', 'test_strata_scope',
     'test_tool_loop_audit', 'test_tool_loop_reduction', 'test_updates', 'test_upgrade'})
 SITE_TESTS = frozenset({f'tests/{name}.py' for name in SITE_TEST_MODULES} | {
-    'tests/records.py', 'tests/golden/pi-invocation.json', 'tests/skills_harness.mjs', 'dashboard/tests/smoke.mjs'})
+    'tests/records.py', 'tests/skills_harness.mjs', 'dashboard/tests/smoke.mjs'})
 REVIEW_PREFIXES = ()                 # M9 settled the last ones (agents/skills/, agents/jetson-skills.json): site
 REVIEW_FILES = frozenset()
 

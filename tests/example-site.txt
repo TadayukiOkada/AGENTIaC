@@ -5,6 +5,7 @@
 # Left out, with the reason: test_eval_image and test_skills read this site's own lock, skills lock and handoff,
 # and test_dashboard_release_layout asserts that this site's engine catalog has a historical and a rollback release
 # (class C, despite the pattern); the tests that load scripts/archive/ read the site's archive (class C, D8.1).
+test_adapters
 test_aggregate
 test_audit
 test_backend_names
@@ -35,11 +36,13 @@ test_gateway_ports
 test_graders
 test_hardware
 test_hygiene
+test_iac
 test_identities
 test_identity
 test_ladder
 test_layout
 test_loop_guard
+test_model_names
 test_mutation
 test_netwatch
 test_observe
@@ -65,6 +68,7 @@ test_secrets
 test_serve_profile
 test_services
 test_sessions
+test_short_aliases
 test_site_literals
 test_spark_tensorfold_worker
 test_state
