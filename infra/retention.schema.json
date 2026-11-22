@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "agentiac retention ledger (ADR 0008, storage-lifecycle-plan.md §4.2, platform-architecture.md §11)",
+  "type": "object",
+  "additionalProperties": false,
+  "patternProperties": {
+    "^[a-z0-9][a-z0-9-]*$": {
+      "type": "object",
+      "required": ["serving", "rollback", "candidate", "quarantine", "retired", "staging", "areas"],
+      "additionalProperties": false,
+      "properties": {
+        "note": {"type": "string", "minLength": 1},
+        "serving": {"type": "array", "items": {"$ref": "#/$defs/entry"}},
+        "rollback": {"type": "array", "items": {"$ref": "#/$defs/entry"}},
+        "candidate": {"type": "array", "items": {"$ref": "#/$defs/entry"}},
+        "quarantine": {"type": "array", "items": {"$ref": "#/$defs/entry"}},
+        "retired": {"type": "array", "items": {"$ref": "#/$defs/entry"}},
+        "staging": {"type": "array", "items": {"$ref": "#/$defs/entry"}},
+        "areas": {"type": "array", "items": {"$ref": "#/$defs/entry"}}
+      }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["class", "reason"],
+      "additionalProperties": false,
+      "anyOf": [
+        {"required": ["backend"]},
+        {"required": ["path"]},
+        {"required": ["image"]},
+        {"required": ["name"]}
+      ],
+      "properties": {
+        "backend": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "path": {"type": "string", "pattern": "^(?!.*(?:^|/)\\.\\.(?:/|$))/[A-Za-z0-9._ -]+(?:/[A-Za-z0-9._ -]+)*$"},
+        "image": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9][A-Za-z0-9._-]*$"},
+        "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "class": {"enum": ["persistent", "managed-cache", "ephemeral", "user-owned", "unknown"]},
+        "form": {"enum": ["full", "thin"]},
+        "retirement": {"enum": ["candidate", "declined"]},
+        "confirmed": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "evidence": {"type": "string", "pattern": "^artifacts/lifecycle/[A-Za-z0-9._/-]+$"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

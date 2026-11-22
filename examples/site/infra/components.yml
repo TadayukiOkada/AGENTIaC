@@ -1,0 +1,16 @@
+# The example site: one pinned engine (examples/site/README.md).
+- id: strata-example
+  kind: engine
+  owner: project
+  hosts:
+  - example-alpha
+  - example-beta
+  source:
+    type: github
+    repository: example-org/Strata
+  pin:
+    version: 0.2.12
+    revision: '0000000000000000000000000000000000000000'
+    lock: backends/strata-0.2.12-tiny-coder-gguf-q4_k_m.json
+  policy: manual
+  gate: 'An example: a person applies an update after preparing a root for it.'

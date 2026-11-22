@@ -1,0 +1,194 @@
+- name: Install loopback tunnels using existing SSH keys
+  hosts: workers
+  gather_facts: false
+  tags: [tunnels]
+  tasks:
+    # Hosts without a default llama.cpp profile (the Strata hosts) have no worker API to
+    # forward; the control host serves on loopback directly (no tunnel_port).
+    - name: Skip hosts without a forwarded worker API
+      ansible.builtin.meta: end_host
+      when: (default_profile is not defined and not (spark_tensorfold | default(false))) or tunnel_port is not defined
+    - name: Install dedicated tunnel service on control
+      become: true
+      delegate_to: localhost
+      ansible.builtin.template:
+        src: templates/tunnel.service.j2
+        dest: '/etc/systemd/system/{{ resource_prefix }}-tunnel-{{ inventory_hostname }}.service'
+        mode: '0644'
+      register: tunnel
+    - name: Start dedicated tunnel on control
+      become: true
+      delegate_to: localhost
+      ansible.builtin.systemd_service:
+        name: '{{ resource_prefix }}-tunnel-{{ inventory_hostname }}'
+        daemon_reload: '{{ tunnel.changed }}'
+        # Borrowed hosts get their tunnel only through agentiac claim, never on deploy or boot.
+        state: "{{ omit if borrowed | default(false) else ('restarted' if tunnel.changed else 'started') }}"
+        enabled: "{{ not (borrowed | default(false)) }}"
+      # In check mode the template above is only simulated, so a host's first tunnel unit does not exist yet and
+      # systemd cannot be asked about it; the real run writes it first.
+      when: not ansible_check_mode or lookup('ansible.builtin.fileglob', '/etc/systemd/system/' ~ resource_prefix ~ '-tunnel-' ~ inventory_hostname ~ '.service') | length > 0
+
+- name: Install the control services
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    code_root: '{{ playbook_dir | dirname }}'
+    instance_root: "{{ lookup('ansible.builtin.env', 'AGENTIAC_ROOT') | default(code_root, true) }}"
+    python: '{{ code_root }}/.venv/bin/python'
+    route: '{{ code_root }}/scripts/route.py'
+    allow_dirty: false
+  tasks:
+    - name: Read the state of this checkout
+      ansible.builtin.command:
+        argv: [git, -C, '{{ instance_root }}', status, --porcelain]
+      register: checkout
+      check_mode: false
+      changed_when: false
+      tags: [always]
+    # What runs should be what git has; --check only reads, so it stays allowed.
+    - name: Refuse to deploy uncommitted changes
+      ansible.builtin.assert:
+        that: allow_dirty | bool or checkout.stdout == ''
+        fail_msg: 'Commit first, or pass --allow-dirty to agentiac ops deploy.'
+        quiet: true
+      when: not ansible_check_mode
+      tags: [always]
+    - name: Create protected secret directory
+      ansible.builtin.file:
+        path: '{{ instance_root }}/secrets'
+        state: directory
+        mode: '0700'
+      tags: [gateway, chatgpt]
+    - name: Generate protected credentials once
+      ansible.builtin.command:
+        argv: ['{{ python }}', '{{ code_root }}/scripts/bootstrap-secrets.py']
+      changed_when: false
+      no_log: true
+      tags: [gateway, chatgpt]
+
+    - name: Local API gateway
+      tags: [gateway]
+      block:
+        - name: Install dedicated gateway unit
+          become: true
+          ansible.builtin.template:
+            src: templates/gateway.service.j2
+            dest: '/etc/systemd/system/{{ resource_prefix }}-gateway.service'
+            mode: '0644'
+          register: gateway
+        - name: Compare the gateway configuration with what it loaded
+          ansible.builtin.command:
+            argv: ['{{ python }}', '{{ route }}', pending, gateway]
+          register: gateway_config
+          check_mode: false
+          changed_when: false
+        - name: Render gateway configuration for the current local-coder target
+          ansible.builtin.command:
+            argv: ['{{ python }}', '{{ route }}', render]
+          changed_when: gateway_config.stdout == 'pending'
+        - name: Start local gateway
+          become: true
+          ansible.builtin.systemd_service:
+            name: '{{ resource_prefix }}-gateway'
+            daemon_reload: '{{ gateway.changed }}'
+            state: "{{ 'restarted' if gateway.changed or gateway_config.stdout == 'pending' else 'started' }}"
+            enabled: true
+        # After the restart: a run that stops earlier leaves the change pending for the next one.
+        - name: Record what the gateway loaded
+          ansible.builtin.command:
+            argv: ['{{ python }}', '{{ route }}', record, gateway]
+          changed_when: true
+          when: gateway.changed or gateway_config.stdout == 'pending'
+
+    # ChatGPT-subscription alias (ADR 0005): separate process, so the main gateway
+    # starts without a ChatGPT sign-in. The unit is skipped until agentiac chatgpt login.
+    - name: ChatGPT gateway
+      tags: [chatgpt]
+      block:
+        - name: Install ChatGPT gateway unit
+          become: true
+          ansible.builtin.template:
+            src: templates/chatgpt.service.j2
+            dest: '/etc/systemd/system/{{ resource_prefix }}-chatgpt.service'
+            mode: '0644'
+          register: chatgpt
+        - name: Compare the ChatGPT configuration with what it loaded
+          ansible.builtin.command:
+            argv: ['{{ python }}', '{{ route }}', pending, chatgpt]
+          register: chatgpt_config
+          check_mode: false
+          changed_when: false
+        - name: Start ChatGPT gateway when signed in
+          become: true
+          ansible.builtin.systemd_service:
+            name: '{{ resource_prefix }}-chatgpt'
+            daemon_reload: '{{ chatgpt.changed }}'
+            state: "{{ 'restarted' if chatgpt.changed or chatgpt_config.stdout == 'pending' else 'started' }}"
+            enabled: true
+        - name: Record what the ChatGPT gateway loaded
+          ansible.builtin.command:
+            argv: ['{{ python }}', '{{ route }}', record, chatgpt]
+          changed_when: true
+          when: chatgpt.changed or chatgpt_config.stdout == 'pending'
+
+    - name: Evaluation watchdog
+      tags: [watch]
+      vars:
+        watch_units:
+          - evaluation-watch.service
+          - evaluation-watch.timer
+          - evaluation-watch-health.service
+          - evaluation-watch-health.timer
+          - update-check.service
+          - update-check.timer
+          - backup.service
+          - backup.timer
+          - backup-verify.service
+          - backup-verify.timer
+          - recovery.service
+          - recovery.timer
+      block:
+        # ReadWritePaths needs it to exist: without it the unit fails before it starts.
+        - name: Create the directory the update check writes
+          ansible.builtin.file:
+            path: '{{ instance_root }}/artifacts/components'
+            state: directory
+            mode: '0700'
+        - name: Create the directory the backup stages into
+          ansible.builtin.file:
+            path: '{{ instance_root }}/artifacts/backup'
+            state: directory
+            mode: '0700'
+        - name: Create the directory the recovery watch writes
+          ansible.builtin.file:
+            path: '{{ instance_root }}/artifacts/recovery'
+            state: directory
+            mode: '0700'
+        - name: Install evaluation watchdog units
+          become: true
+          ansible.builtin.template:
+            src: 'templates/{{ item }}.j2'
+            dest: '/etc/systemd/system/{{ resource_prefix }}-{{ item }}'
+            mode: '0644'
+          loop: '{{ watch_units }}'
+          register: watch_files
+        # The services run from their timers; a restart of a timer never cuts a check short.
+        # `--check` installs nothing, so a unit new in this deploy cannot be found yet: skip only that one.
+        - name: Keep the evaluation watchdog timers running
+          become: true
+          ansible.builtin.systemd_service:
+            name: '{{ resource_prefix }}-{{ item }}'
+            daemon_reload: '{{ watch_files.changed }}'
+            state: "{{ 'restarted' if watch_files.changed else 'started' }}"
+            enabled: true
+          loop: [evaluation-watch.timer, evaluation-watch-health.timer, update-check.timer, backup.timer,
+                 backup-verify.timer, recovery.timer]
+          when: not ansible_check_mode or lookup('ansible.builtin.fileglob', '/etc/systemd/system/' ~ resource_prefix ~ '-' ~ item) | length > 0
+
+    - name: Record the deployed revision
+      ansible.builtin.command:
+        argv: ['{{ python }}', '{{ route }}', record-deploy]
+      changed_when: true
+      tags: [always]

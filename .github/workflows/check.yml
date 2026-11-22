@@ -1,0 +1,92 @@
+name: checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          # tests/test_evidence.py re-hashes the declaration a retired evidence entry cites, which needs the
+          # history a default fetch-depth 1 clone does not have.
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet -r requirements-control.lock
+          python -m venv .venv-lint
+          .venv-lint/bin/pip install --quiet -r requirements-lint.lock
+      - run: make check PYTHON=.venv/bin/python
+      - run: make lint
+      - run: make site-lint
+
+  core:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet -r requirements-control.lock
+          python -m venv .venv-dashboard
+          .venv-dashboard/bin/pip install --quiet -r requirements-dashboard.lock
+          python -m venv .venv-lint
+          .venv-lint/bin/pip install --quiet -r requirements-lint.lock
+      - run: make example-check PYTHON=.venv/bin/python
+      - run: make lint
+      - run: |
+          rehearsal=$(mktemp -d)/rehearsal
+          .venv/bin/python scripts/split-rehearsal.py "$rehearsal"
+          AGENTIAC_ROOT=$(pwd)/examples/site AGENTIAC_STATE_ROOT=$(mktemp -d) PYTHONPATH="$rehearsal/site/core/src" .venv/bin/python -m unittest discover -s "$rehearsal/site/core/tests" -p test_site_literals.py -v
+          rm -rf "$(dirname "$rehearsal")"
+
+  dashboard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: '24.22.0'
+          package-manager-cache: false
+      - name: Install isolated dashboard and audit environments
+        run: |
+          python -m venv .venv-dashboard
+          .venv-dashboard/bin/pip install --quiet -r requirements-dashboard.lock
+          python -m venv .venv-dashboard-audit
+          .venv-dashboard-audit/bin/pip install --quiet -r requirements-dashboard-audit.lock
+      - name: API, ledger, process crash and recovery regressions
+        env:
+          PYTHONPATH: src
+        run: |
+          .venv-dashboard/bin/python -m unittest discover -s tests -p test_services.py -v
+          .venv-dashboard/bin/python -m unittest discover -s tests -p 'test_management*.py' -v
+          .venv-dashboard/bin/python -m unittest discover -s tests -p test_engine_catalog.py -v
+          .venv-dashboard/bin/python -m unittest discover -s tests -p test_jobs.py -v
+          .venv-dashboard/bin/python -m unittest discover -s tests -p test_probe_worker.py -v
+          .venv-dashboard/bin/python -m unittest discover -s tests -p 'test_dashboard_*.py' -v
+          .venv-dashboard/bin/python scripts/dashboard-schema.py --check
+      - name: Typecheck, build and browser integration with local probe fixture
+        working-directory: dashboard
+        run: |
+          npm ci
+          npm run check
+          npm run build
+          npm run test:smoke
+      - name: Audit only the dashboard dependency locks
+        run: |
+          .venv-dashboard-audit/bin/pip-audit --disable-pip --no-deps -r requirements-dashboard.lock
+          npm --prefix dashboard audit

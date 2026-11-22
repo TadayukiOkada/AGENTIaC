@@ -1,0 +1,9 @@
+AGENTIaC
+Copyright 2026 The AGENTIaC authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The coding-agent configuration under agents/pi/ declares npm dependencies
+(agents/pi/package.json and agents/pi/package-lock.json). Those packages are
+installed from their registry under their own licences and are not distributed
+with this product.

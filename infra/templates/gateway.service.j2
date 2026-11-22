@@ -1,0 +1,29 @@
+[Unit]
+Description=agent-infra local API gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ ansible_user }}
+WorkingDirectory={{ code_root }}/gateway
+Environment=AGENTIAC_ROOT={{ instance_root }}
+EnvironmentFile={{ instance_root }}/secrets/gateway.env
+Environment=DO_NOT_TRACK=1
+Environment=LITELLM_TELEMETRY=False
+Environment=LITELLM_LOCAL_MODEL_COST_MAP=True
+Environment=PYTHONPATH={{ code_root }}/gateway
+Environment=AGENTIAC_ROUTES={{ instance_root }}/artifacts/gateway/routes.json
+Environment=AGENTIAC_NODES={{ instance_root }}/artifacts/gateway/nodes.json
+Environment=CHATGPT_TOKEN_DIR={{ instance_root }}/secrets/chatgpt
+ExecStart={{ code_root }}/.venv-gateway/bin/litellm --config {{ instance_root }}/artifacts/gateway/config.yaml --host 127.0.0.1 --port {{ gateway_port }} --num_workers 1
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+MemoryMax=2G
+CPUQuota=200%
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

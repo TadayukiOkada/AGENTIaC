@@ -1,0 +1,7 @@
+# Plays that change a host never run on all workers by accident: agentiac always
+# names the host, and a direct ansible-playbook run has to as well.
+- name: Refuse to run without an explicit host
+  ansible.builtin.assert:
+    that: ansible_limit | default('') | length > 0
+    fail_msg: 'Name the host with --limit; agentiac ops does this for you.'
+    quiet: true

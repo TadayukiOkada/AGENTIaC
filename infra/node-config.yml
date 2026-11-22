@@ -1,0 +1,100 @@
+# agentiac ops node-config HOST: make node.json say what the declaration says, without serving anything (T5.11).
+#
+# Why this play exists: a host's `node.json` written by an earlier `infra/start.yml` run can keep
+# naming a retired runtime image tag even when the host no longer serves a llama.cpp profile
+# (`agentiac-inference.service` installed, inactive and disabled). A file naming a removed image
+# is the reverse of the lifecycle order: the declaration changes first, then the artifact.
+#
+# It corrects a file, never creates one: a host with no `node.json` (the Strata hosts) has nothing stale to fix. It
+# starts nothing, loads nothing and touches no unit, and it refuses when the difference is more than the image —
+# a port, a memory limit or a cpu count is a decision about what that host serves, not a stale tag.
+- name: Rewrite the node configuration from the declaration
+  hosts: workers
+  gather_facts: false
+  tasks:
+    - name: Require an explicit host
+      ansible.builtin.import_tasks: tasks/require-limit.yml
+
+    - name: Look for the node configuration on disk
+      ansible.builtin.stat:
+        path: '{{ project_root }}/node.json'
+      register: existing
+
+    - name: Say so when there is nothing to correct
+      ansible.builtin.debug:
+        msg: '{{ inventory_hostname }} holds no node.json - no profile serve was ever installed there'
+      when: not existing.stat.exists
+
+    - name: Ask whether a profile serve is running here  # noqa: command-instead-of-module
+      ansible.builtin.command: 'systemctl is-active --quiet {{ resource_prefix }}-inference'
+      register: serving
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: existing.stat.exists
+
+    - name: Refuse to rewrite a file a running serve is reading
+      ansible.builtin.assert:
+        that: serving.rc != 0
+        fail_msg: >-
+          {{ resource_prefix }}-inference is active on {{ inventory_hostname }}. node.json is what that serve reads: stop the
+          serve first (agentiac ops stop {{ inventory_hostname }}), then rewrite it.
+      when: existing.stat.exists
+
+    - name: Build the configuration this declaration says
+      ansible.builtin.import_tasks: tasks/write-node-config.yml
+      when: existing.stat.exists
+
+    - name: Name what the file says and what the declaration renders
+      ansible.builtin.set_fact:
+        rewrite:
+          file: '{{ (node_before.content | b64decode | from_json).keys() | list | sort }}'
+          declared: '{{ (node_config_content | from_json).keys() | list | sort }}'
+          differs: >-
+            {% set before = node_before.content | b64decode | from_json %}
+            {% set after = node_config_content | from_json %}
+            {% for key in after %}{% if key in before and before[key] != after[key] %}{{ key }}
+            {% endif %}{% endfor %}
+          added_null: >-
+            {% set before = node_before.content | b64decode | from_json %}
+            {% set after = node_config_content | from_json %}
+            {% for key in after %}{% if key not in before and after[key] is none %}{{ key }}
+            {% endif %}{% endfor %}
+          added_other: >-
+            {% set before = node_before.content | b64decode | from_json %}
+            {% set after = node_config_content | from_json %}
+            {% for key in after %}{% if key not in before and after[key] is not none %}{{ key }}
+            {% endif %}{% endfor %}
+          removed: >-
+            {% set before = node_before.content | b64decode | from_json %}
+            {% set after = node_config_content | from_json %}
+            {% for key in before %}{% if key not in after %}{{ key }} {% endif %}{% endfor %}
+      when: existing.stat.exists
+
+    # What this play may fix is what a stale file *is*: the image tag it names, and a field the declaration gained
+    # since the file was written whose declared value is null (scripts/serve-profile.py reads `max_gpu_used_mib`
+    # with `.get()`, so a null changes no gate). Anything else — a value changing, a field disappearing, a field
+    # appearing with a value — is a decision about what that host serves, and belongs in infra/inventory.yml.
+    - name: Refuse a correction that reaches past the image
+      ansible.builtin.assert:
+        that:
+          - rewrite.removed | trim == ''
+          - rewrite.added_other | trim == ''
+          - rewrite.differs.split() | difference(['image']) | length == 0
+        fail_msg: >-
+          {{ inventory_hostname }}: node.json differs from what the declaration renders in
+          values {{ rewrite.differs | trim or 'nothing' }}, fields only the file has {{ rewrite.removed | trim or
+          'nothing' }}, fields the declaration gained with a value {{ rewrite.added_other | trim or 'nothing' }}.
+          This play corrects a stale image reference (and a null field the declaration gained), and nothing else —
+          a port, a memory limit or a cpu count is a decision about what this host serves (T9.10-3 names the port
+          question).
+      when: existing.stat.exists
+
+    - name: Report what the file names now
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: image {{ (node_before.content | b64decode | from_json).image | default('?') }}
+          -> {{ runtime_image }}; fields the declaration gained as null: {{ rewrite.added_null | trim or 'none' }};
+          {{ 'written' if node_config.changed | default(false) else 'already current' }}; inference unit
+          {{ 'active' if serving.rc == 0 else 'not active' }}
+      when: existing.stat.exists

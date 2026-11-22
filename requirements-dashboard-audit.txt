@@ -1,0 +1,2 @@
+# Separate audit tool environment, never installed into control/gateway/dashboard runtime.
+pip-audit==2.10.1

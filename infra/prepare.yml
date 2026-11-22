@@ -1,0 +1,22 @@
+# agentiac ops prepare HOST [--backend ID]: pinned preparation as a persistent worker job.
+# It never starts a model and never touches a running one.
+- name: Prepare a pinned backend on its worker
+  hosts: workers
+  gather_facts: false
+  tasks:
+    - name: Require an explicit host
+      ansible.builtin.import_tasks: tasks/require-limit.yml
+    # The choice is the backend that was asked for, not the host. A host can hold both a pinned TensorFold service
+    # AND a declared Strata trial root: a preparation without --backend keeps preparing TensorFold, while an explicit
+    # `--backend strata-...` prepares Strata instead of letting `spark_tensorfold` alone decide.
+    - name: TensorFold is what Spark prepares when nothing else was asked for
+      ansible.builtin.set_fact:
+        prepare_tensorfold: >-
+          {{ spark_tensorfold | default(false)
+             and (backend_id is not defined or backend_id == 'tf-1.1.4-qfn-mxfp8-nvfp4') }}
+    - name: Prepare TensorFold
+      ansible.builtin.include_tasks: tasks/prepare-tensorfold.yml
+      when: prepare_tensorfold | bool
+    - name: Prepare Strata
+      ansible.builtin.include_tasks: tasks/prepare-strata.yml
+      when: not (prepare_tensorfold | bool)

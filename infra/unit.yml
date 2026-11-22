@@ -1,0 +1,36 @@
+# Units of ours that outlive a claim, installed here so that their text has one home.
+# scripts/borrow.py runs this; a claim on a borrowed host otherwise leaves only transient units.
+- name: Install a project systemd unit
+  hosts: workers
+  gather_facts: false
+  vars:
+    units:
+      ondemand: {file: '{{ resource_prefix }}-ondemand.service', run: true}
+      spark-tensorfold: {file: '{{ resource_prefix }}-spark-tensorfold.service', run: false}
+  tasks:
+    - name: Require an explicit host
+      ansible.builtin.import_tasks: tasks/require-limit.yml
+    - name: Validate the unit
+      ansible.builtin.assert:
+        that:
+          - unit in units
+          - directory is defined
+    - name: Install the unit
+      become: true
+      ansible.builtin.template:
+        src: 'templates/{{ unit }}.service.j2'
+        dest: '/etc/systemd/system/{{ units[unit].file }}'
+        mode: '0644'
+      register: installed
+    - name: Reload systemd after a change
+      become: true
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: installed.changed
+    - name: Enable and start the unit
+      become: true
+      ansible.builtin.systemd_service:
+        name: '{{ units[unit].file }}'
+        enabled: true
+        state: started
+      when: units[unit].run

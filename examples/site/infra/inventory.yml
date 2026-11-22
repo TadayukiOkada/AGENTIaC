@@ -1,0 +1,60 @@
+# The example site: synthetic names only (examples/site/README.md).
+all:
+  vars:
+    ansible_user: example-operator
+    ansible_python_interpreter: /usr/bin/python3
+    project_root: /srv/agentiac
+    backend_revision: '0000000000000000000000000000000000000000'
+    backend_port: 18080
+    runtime_image: agentiac-runtime:example
+    ondemand_backend_port: 18090
+    idle_unload_minutes: 30
+    nodejs_binary: /opt/example/node/bin/node
+    rclone_config_dir: /srv/agentiac/rclone
+    backup_destination: example-remote:agentiac-backups
+    gateway_port: 14000
+    chatgpt_port: 14001
+    resource_prefix: agentiac
+  children:
+    workers:
+      hosts:
+        example-alpha:
+          ansible_host: example-alpha.example
+          node_class: orin
+          cuda_arch: '87'
+          memory_limit: 16G
+          min_available_gib: 8
+          build_jobs: 4
+          tunnel_port: 18101
+          inference_cpus: 4
+          max_load: 6
+          cuda_lib: /usr/local/cuda/lib64
+          default_profile: tiny-coder-q4
+          gateway_alias: example-alpha-worker
+          ondemand_persistent: true
+          strata_backend: strata-0.2.12-tiny-coder-gguf-q4_k_m
+          strata_trial_roots:
+            0.2.12: /srv/agentiac/strata-0.2.12
+        example-beta:
+          ansible_host: example-beta.example
+          node_class: rtx3090
+          cuda_arch: '86'
+          memory_limit: 24G
+          min_available_gib: 8
+          build_jobs: 4
+          tunnel_port: 18102
+          inference_cpus: 8
+          max_load: 8
+          cuda_lib: /usr/local/cuda/lib64
+          borrowed: true
+          backend: strata
+          inference_unit: agentiac-strata-inference
+          strata_default_backend: strata-0.2.12-tiny-coder-gguf-q4_k_m
+          strata_trial_roots:
+            0.2.12: /srv/agentiac/strata-0.2.12
+          strata_api_port: 18085
+          strata_tunnel_port: 18112
+        control:
+          ansible_connection: local
+          ansible_host: localhost
+          node_class: rtx3050-laptop

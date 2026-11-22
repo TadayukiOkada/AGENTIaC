@@ -1,0 +1,40 @@
+# The test modules that pass against examples/site (`make example-check`, site-separation.md D8.3, D6.6): class A
+# (they read no declaration) and class B (they validate whatever site they run on). One module per line; a second
+# column names the interpreter when the module needs another environment than the default.
+#
+# Left out, with the reason: test_eval_image and test_skills read this site's own lock, skills lock and handoff,
+# and test_dashboard_release_layout asserts that this site's engine catalog has a historical and a rollback release
+# (class C, despite the pattern); the tests that load scripts/archive/ read the site's archive (class C, D8.1).
+test_aggregate
+test_audit
+test_cli
+test_client
+test_context_probe
+test_declared_settings
+test_evaluation_watch
+test_example_site
+test_gateway_ports
+test_graders
+test_hygiene
+test_layout
+test_loop_guard
+test_netwatch
+test_paths
+test_pi_pin
+test_protocol
+test_publish_scan
+test_reasoning_options
+test_rename_core
+test_repo
+test_repo_budget
+test_repo_output_limit
+test_repo_recovery
+test_restore
+test_route_deploy
+test_secrets
+test_serve_profile
+test_site_literals
+test_state
+test_strata_watch
+test_dashboard_tls .venv-dashboard/bin/python
+test_probe_worker .venv-dashboard/bin/python

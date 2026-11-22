@@ -1,0 +1,11 @@
+[Unit]
+Description=Check evaluation watchdog health every10minutes
+
+[Timer]
+OnCalendar=*:0/10
+Persistent=true
+AccuracySec=30s
+Unit={{ resource_prefix }}-evaluation-watch-health.service
+
+[Install]
+WantedBy=timers.target

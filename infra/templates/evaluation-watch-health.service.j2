@@ -1,0 +1,18 @@
+[Unit]
+Description=Check evaluation watchdog timer and heartbeat
+After=network-online.target
+
+[Service]
+Type=oneshot
+User={{ ansible_user }}
+WorkingDirectory={{ instance_root }}
+Environment=AGENTIAC_ROOT={{ instance_root }}
+ExecStart={{ code_root }}/bin/agentiac eval watch health
+TimeoutStartSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={{ instance_root }}/artifacts/evaluation-watch
+StandardOutput=journal
+StandardError=journal

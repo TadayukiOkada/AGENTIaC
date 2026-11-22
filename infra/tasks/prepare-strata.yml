@@ -1,0 +1,95 @@
+- name: Require a Strata backend manifest
+  ansible.builtin.assert:
+    that:
+      - backend_id is defined
+      - backend_id is match('^strata-[a-z0-9._-]+$')
+      - backend | default('') == 'strata' or strata_backend is defined or strata_trial_roots is defined
+      # The third form: a host a Strata manifest can be prepared on because its inventory declares the
+      # versioned root that engine prepares into, while serving something else by default. scripts/borrow.py's
+      # serves_strata() says the same thing, and the two must not disagree about who may be prepared.
+- name: Read the manifest
+  ansible.builtin.set_fact:
+    manifest: "{{ lookup('file', '../backends/' + backend_id + '.json') | from_json }}"
+- name: Require a manifest for this host
+  ansible.builtin.assert:
+    that: inventory_hostname in manifest.workers
+- name: Read the versioned roots of this host
+  ansible.builtin.set_fact:
+    trial_roots: "{{ strata_trial_roots | default({}) }}"
+- name: Require a root for this engine version
+  # One root per engine version, chosen by the manifest's own source_version. There is no unversioned
+  # fallback (`strata_trial_root` is retired), and the legacy `strata_root` is not a root this playbook prepares.
+  ansible.builtin.assert:
+    that:
+      - manifest.source_version in trial_roots or backend_id in trial_roots or manifest.id in trial_roots
+    fail_msg: >-
+      {{ manifest.id }} engine {{ manifest.source_version }} has no root in strata_trial_roots on
+      {{ inventory_hostname }}: add "{{ manifest.source_version }}: <path>" to infra/inventory.yml first, or
+      "{{ backend_id }}: <path>" when this engine version holds more than one weight set and each needs its
+      own root
+- name: Choose the root of this engine version
+  ansible.builtin.set_fact:
+    # a key naming this manifest wins over its version key: its file name first, then the id inside it (the two
+    # differ for a manifest renamed under the naming rule until its id follows; src/agentiac/upgrade.py trial_root)
+    root: "{{ trial_roots[backend_id] if backend_id in trial_roots else trial_roots[manifest.id] if manifest.id in trial_roots
+              else trial_roots[manifest.source_version] }}"
+- name: Create the root
+  # The versioned roots sit beside the older ones, in a directory the login user does not own (on the RTX 4080 host,
+  # the project root belongs to root), so the root itself is created privileged and handed to the user;
+  # everything inside it - the venv, the weights, the private state - is then written by the unprivileged worker.
+  become: true
+  ansible.builtin.file:
+    path: '{{ root }}'
+    state: directory
+    owner: '{{ ansible_user }}'
+    group: '{{ ansible_user }}'
+    mode: '0750'
+- name: Create the manifest directory
+  ansible.builtin.file:
+    path: '{{ root }}/backends'
+    state: directory
+    mode: '0750'
+- name: Copy the preparation script
+  ansible.builtin.copy:
+    src: ../scripts/strata-prepare-worker.py
+    dest: '{{ root }}/prepare-worker.py'
+    mode: '0750'
+- name: Copy the manifest
+  ansible.builtin.copy:
+    src: '../backends/{{ backend_id }}.json'
+    dest: '{{ root }}/backends/{{ backend_id }}.json'
+    mode: '0640'
+- name: Read the preparation state
+  ansible.builtin.command:
+    argv: [cat, '{{ root }}/prepare-{{ backend_id }}-state.json']
+  register: state
+  check_mode: false
+  failed_when: false
+  changed_when: false
+- name: Inspect the current preparation job
+  ansible.builtin.command:
+    argv: [systemctl, is-active, '{{ resource_prefix }}-strata-prepare']
+  register: preparing
+  check_mode: false
+  failed_when: false
+  changed_when: false
+- name: Read the saved preparation stage
+  # A `changed_when: false` cat that nothing prints hides a failed prior stage from the operator, so show it explicitly.
+  ansible.builtin.set_fact:
+    saved: '{{ state.stdout | from_json }}'
+  when: state.rc == 0
+- name: Show what a preparation of this backend left in the root
+  ansible.builtin.debug:
+    msg: 'saved preparation state of {{ backend_id }} in {{ root }}: {{ saved }}'
+  when: state.rc == 0
+- name: Start the persistent preparation
+  become: true
+  ansible.builtin.command:
+    argv: "{{ ['systemd-run', '--unit=' + resource_prefix + '-strata-prepare', '--collect', '--uid=' + ansible_user, '/usr/bin/python3',
+               root + '/prepare-worker.py', '--node', inventory_hostname, '--root', root, '--backend', root + '/backends/' + backend_id + '.json']
+              + (['--reuse-root', reuse_root] if reuse_root is defined else []) + (['--isolated'] if isolated | default(false) | bool else [])
+              + (['--resume-failed'] if saved.stage | default('') == 'failed' else []) }}"
+  when:
+    - preparing.stdout != "active"
+    - '''"stage": "prepared"'' not in state.stdout'
+  changed_when: true

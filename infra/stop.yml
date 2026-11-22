@@ -1,0 +1,21 @@
+# agentiac ops stop HOST: stays stopped until the next claim or ops start, or until a dedicated
+# worker reboots with its enabled front.
+- name: Stop only project inference
+  hosts: workers
+  gather_facts: false
+  tasks:
+    - name: Require an explicit host
+      ansible.builtin.import_tasks: tasks/require-limit.yml
+    # The front goes first: it would load the model again on the next request.
+    - name: Stop the on-demand front, inference and its watch
+      become: true
+      ansible.builtin.shell: | # noqa: command-instead-of-module
+        set -e
+        for unit in {{ resource_prefix }}-ondemand {{ inference_unit | default(resource_prefix ~ '-inference') }} {{ resource_prefix ~ '-strata-inference' if strata_backend is defined else '' }} {{ resource_prefix }}-strata-watch; do
+          if systemctl is-active --quiet "$unit"; then
+            systemctl stop "$unit"
+            echo "$unit"
+          fi
+        done
+      register: stopped
+      changed_when: stopped.stdout != ''

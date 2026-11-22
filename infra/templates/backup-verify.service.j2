@@ -1,0 +1,23 @@
+[Unit]
+Description=agent-infra restore test for the control backup (IP-15)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User={{ ansible_user }}
+WorkingDirectory={{ instance_root }}
+Environment=AGENTIAC_ROOT={{ instance_root }}
+# Download the archive the record names, compare its sha256, extract it outside the live tree, re-run the
+# aggregation there and compare every attempt's final patch with the live tree. An untested backup is not a
+# backup, so this runs on its own timer rather than waiting for someone to remember it.
+ExecStart={{ code_root }}/bin/agentiac ops backup verify
+TimeoutStartSec=7200
+Nice=15
+IOWeight=50
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths={{ instance_root }}/artifacts {{ rclone_config_dir }}
+StandardOutput=journal
+StandardError=journal

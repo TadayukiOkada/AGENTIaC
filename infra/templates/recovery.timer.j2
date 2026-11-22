@@ -1,0 +1,14 @@
+[Unit]
+Description=Re-claim the host the route points at, every 5 minutes, when the route is down
+
+[Timer]
+# Detection, not retry: scripts/recover.py holds its own 20 minute cooldown between claims, and its gates say
+# stand down rather than try again. Persistent so a control host that was off catches up on boot.
+OnCalendar=*:0/5
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=30s
+Unit={{ resource_prefix }}-recovery.service
+
+[Install]
+WantedBy=timers.target

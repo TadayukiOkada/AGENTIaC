@@ -1,0 +1,37 @@
+# node.json, written in one place.
+#
+# Two plays need it: `infra/start.yml` writes it while installing a profile serve, and `infra/node-config.yml`
+# rewrites it from the declaration on a host that serves nothing. Keeping a single writer avoids stale copies
+# that still name a retired runtime image (`scripts/serve-profile.py` reads the `image` field out of this file).
+#
+# What is *not* a declaration stays as it is: the `port`. scripts/borrow.py re-passes the port a node already
+# serves on (`-e serve_port=<backend_port from the file>`). The port in those files is 18090 — the internal port
+# the on-demand front moves the worker to — while the plain inventory default is 18080, the port the front itself
+# takes. Rendering the default over a running node would move it. So: an explicitly named port wins, otherwise keep
+# the file's, and only then fall back to the declared API port.
+- name: Read the node configuration already on disk
+  ansible.builtin.slurp:
+    src: '{{ project_root }}/node.json'
+  register: node_before
+  failed_when: false
+
+- name: Build the configuration this declaration says
+  ansible.builtin.set_fact:
+    node_config_content: >-
+      {{ {'cuda_arch': cuda_arch, 'node_class': node_class, 'memory_limit': memory_limit,
+          'min_available_gib': min_available_gib, 'max_load': max_load, 'cpus': inference_cpus,
+          'port': node_port, 'cuda_lib': cuda_lib, 'image': runtime_image,
+          'max_gpu_used_mib': max_gpu_used_mib | default(none)} | to_nice_json }}
+  vars:
+    node_port: >-
+      {{ serve_port if serve_port is defined
+         else ((node_before.content | b64decode | from_json).port if node_before.content is defined
+         else backend_port) }}
+
+- name: Write node configuration
+  ansible.builtin.copy:
+    content: '{{ node_config_content }}'
+    dest: '{{ project_root }}/node.json'
+    mode: '0640'
+  register: node_config
+  when: node_before.content is not defined or (node_before.content | b64decode) != node_config_content

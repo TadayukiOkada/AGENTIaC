@@ -1,0 +1,18 @@
+[Unit]
+Description=agent-infra isolated inference
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 {{ project_root }}/scripts/serve-profile.py --cors-origin http://127.0.0.1:{{ gateway_port }} --container {{ resource_prefix }}-inference {{ project_root }}
+ExecStop=/usr/bin/python3 {{ project_root }}/scripts/stop-project.py {{ resource_prefix }}-inference
+Restart=no
+TimeoutStartSec=900
+TimeoutStopSec=90
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier={{ resource_prefix }}-inference
+
+[Install]
+WantedBy=multi-user.target

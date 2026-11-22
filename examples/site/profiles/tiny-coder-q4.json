@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "tiny-coder-q4",
+  "repo": "example-org/Tiny-Coder-GGUF",
+  "revision": "0000000000000000000000000000000000000000",
+  "upstream": {
+    "repo": "example-org/Tiny-Coder",
+    "revision": "0000000000000000000000000000000000000000",
+    "license": "apache-2.0"
+  },
+  "quantization": "Q4_K_M",
+  "publisher": "Example",
+  "nodes": [
+    "orin"
+  ],
+  "files": [
+    {
+      "path": "Tiny-Coder-Q4_K_M.gguf",
+      "bytes": 1024,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "entrypoint": "Tiny-Coder-Q4_K_M.gguf",
+  "backend": {
+    "name": "llama.cpp",
+    "revision": "0000000000000000000000000000000000000000",
+    "context": 32768,
+    "slots": 1,
+    "batch": 512,
+    "ubatch": 256,
+    "cache_ram_mib": 0,
+    "extra_args": []
+  },
+  "status": "An example declaration: never downloaded or served (examples/site, D8.3)."
+}

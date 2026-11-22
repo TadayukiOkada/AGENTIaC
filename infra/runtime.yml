@@ -1,0 +1,28 @@
+- name: Build project runtime dependency image
+  hosts: workers
+  gather_facts: false
+  tasks:
+    - name: Require an explicit host
+      ansible.builtin.import_tasks: tasks/require-limit.yml
+    - name: Create runtime build context
+      ansible.builtin.file:
+        path: '{{ project_root }}/runtime'
+        state: directory
+        mode: '0750'
+    - name: Copy Dockerfile
+      ansible.builtin.copy:
+        src: ../runtime/Dockerfile
+        dest: '{{ project_root }}/runtime/Dockerfile'
+        mode: '0640'
+    - name: Inspect runtime image
+      ansible.builtin.command:
+        argv: [docker, image, inspect, '{{ runtime_image }}']
+      register: image
+      check_mode: false
+      failed_when: false
+      changed_when: false
+    - name: Build runtime image without modifying host packages
+      ansible.builtin.command:
+        argv: [docker, build, --pull=false, -t, '{{ runtime_image }}', '{{ project_root }}/runtime']
+      when: image.rc != 0
+      changed_when: true

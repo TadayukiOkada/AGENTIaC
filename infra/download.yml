@@ -1,0 +1,58 @@
+- name: Download and verify model directly on workers
+  hosts: workers
+  gather_facts: false
+  tasks:
+    - name: Require an explicit host
+      ansible.builtin.import_tasks: tasks/require-limit.yml
+    - name: Validate explicit model profile
+      ansible.builtin.assert:
+        that:
+          - model is defined
+          - model is match('^[a-z0-9-]+$')
+    - name: Load model manifest
+      ansible.builtin.set_fact:
+        manifest: "{{ lookup('file', '../profiles/' + model + '.json') | from_json }}"
+    - name: Create isolated storage
+      ansible.builtin.file:
+        path: '{{ project_root }}/{{ item }}'
+        state: directory
+        mode: '0750'
+      loop: [scripts, profiles, models]
+    - name: Copy downloader
+      ansible.builtin.copy:
+        src: ../scripts/download-model.py
+        dest: '{{ project_root }}/scripts/download-model.py'
+        mode: '0750'
+    - name: Copy pinned profile
+      ansible.builtin.copy:
+        src: '../profiles/{{ model }}.json'
+        dest: '{{ project_root }}/profiles/{{ model }}.json'
+        mode: '0640'
+    - name: Inspect download completion
+      ansible.builtin.stat:
+        path: '{{ project_root }}/models/{{ model }}/{{ manifest.revision }}/verified.json'
+      register: verified
+    - name: Inspect existing download job
+      ansible.builtin.command:
+        argv: [systemctl, is-active, '{{ resource_prefix }}-download-{{ model }}']
+      register: downloading
+      check_mode: false
+      failed_when: false
+      changed_when: false
+    - name: Start persistent resumable download
+      become: true
+      ansible.builtin.command:
+        argv:
+          - systemd-run
+          - '--unit={{ resource_prefix }}-download-{{ model }}'
+          - --collect
+          - --uid={{ ansible_user }}
+          - --property=CPUQuota=100%
+          - --property=MemoryMax=2G
+          - --property=Nice=10
+          - /usr/bin/python3
+          - '{{ project_root }}/scripts/download-model.py'
+          - '{{ project_root }}/profiles/{{ model }}.json'
+          - '{{ project_root }}/models'
+      when: not verified.stat.exists and downloading.stdout != "active"
+      changed_when: true

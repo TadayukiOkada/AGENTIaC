@@ -1,0 +1,12 @@
+{
+  "repo_path": "/absolute/path/to/local/repository",
+  "revision": "REPLACE_WITH_FULL_COMMIT_SHA",
+  "image": "agentiac-eval:baseline",
+  "instruction": "Describe the desired change and acceptance criteria.",
+  "test_command": ["python3", "-m", "unittest", "discover"],
+  "test_timeout_s": 300,
+  "max_turns": 30,
+  "context_paths": [],
+  "protected_paths": [],
+  "grader_dir": null
+}

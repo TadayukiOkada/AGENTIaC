@@ -1,0 +1,18 @@
+# Long Jinja expressions stay on one line; `when: x.changed` is how these playbooks restart
+# (a handler would be lost the same way on a failed run).
+profile: production
+offline: true
+skip_list:
+  - yaml[line-length]
+  - no-handler
+  - fqcn[action-core]
+exclude_paths:
+  - .venv/
+  - .venv-gateway/
+  - .venv-bfcl/
+  - .venv-lint/
+  - artifacts/
+  - benchmarks/
+  - agents/
+  - gateway/
+  - ci/

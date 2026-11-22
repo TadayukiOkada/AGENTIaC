@@ -1,0 +1,6 @@
+# The publication scan (`make publish-scan`, site-separation.md D6.7 item 2) uses gitleaks' default rules and no
+# allowlist: the gate scans only the tree that is published, and its accepted result is zero findings.
+title = "AGENTIaC publication scan"
+
+[extend]
+useDefault = true

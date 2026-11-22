@@ -1,0 +1,19 @@
+# The example site: synthetic names only (examples/site/README.md).
+model_list:
+- model_name: example-alpha-worker
+  litellm_params:
+    model: openai/tiny-coder-q4_k_m
+    api_base: http://127.0.0.1:18101/v1
+    api_key: os.environ/EXAMPLE_ALPHA_API_KEY
+- model_name: example-beta-worker-tiny
+  litellm_params:
+    model: openai/tiny-coder-q4_k_m
+    api_base: http://127.0.0.1:18112/v1
+    api_key: os.environ/STRATA_EXAMPLE_BETA_API_KEY
+- model_name: example-cloud
+  litellm_params:
+    model: litellm_proxy/example-cloud
+    api_base: http://127.0.0.1:14001
+    api_key: os.environ/LITELLM_MASTER_KEY
+litellm_settings:
+  drop_params: true

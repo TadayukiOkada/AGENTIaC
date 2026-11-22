@@ -1,0 +1,11 @@
+[Unit]
+Description=Check upstream versions and audit the locks once a day
+
+[Timer]
+OnCalendar=*-*-* 06:17:00
+Persistent=true
+AccuracySec=5min
+Unit={{ resource_prefix }}-update-check.service
+
+[Install]
+WantedBy=timers.target

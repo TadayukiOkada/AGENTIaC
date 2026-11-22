@@ -1,0 +1,34 @@
+{
+  "id": "strata-0.2.12-tiny-coder-gguf-q4_k_m",
+  "repository": "https://example.invalid/Strata",
+  "source_revision": "0000000000000000000000000000000000000000",
+  "source_version": "0.2.12",
+  "model_repository": "example-org/Tiny-Coder-GGUF",
+  "model_revision": "0000000000000000000000000000000000000000",
+  "family": "example",
+  "files": [
+    {
+      "path": "Tiny-Coder-Q4_K_M.gguf",
+      "size": 1024,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "workers": {
+    "example-alpha": {
+      "cuda_arch": "87",
+      "unified_memory": true,
+      "min_available_gib": 8
+    },
+    "example-beta": {
+      "cuda_arch": "86",
+      "unified_memory": true,
+      "min_available_gib": 8
+    }
+  },
+  "context": 32768,
+  "contexts": [
+    32768
+  ],
+  "served_model": "tiny-coder-q4_k_m",
+  "status": "An example declaration: never downloaded or served (examples/site, D8.3)."
+}

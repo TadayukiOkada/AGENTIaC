@@ -1,0 +1,16 @@
+[Unit]
+Description=agent-infra SSH forward to {{ inventory_hostname }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ ansible_user }}
+ExecStart=/usr/bin/ssh -x -NT -o BatchMode=yes -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -L 127.0.0.1:{{ tunnel_port }}:127.0.0.1:{{ backend_port }} {{ ansible_user }}@{{ ansible_host }}
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

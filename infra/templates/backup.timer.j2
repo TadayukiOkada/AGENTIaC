@@ -1,0 +1,13 @@
+[Unit]
+Description=Back up control's evaluation records once a week (IP-15)
+
+[Timer]
+# 04:30 local on Sunday: away from the 06:17 update check and outside the power window the owner sets.
+OnCalendar=Sun *-*-* 04:30:00
+Persistent=true
+AccuracySec=15min
+RandomizedDelaySec=10min
+Unit={{ resource_prefix }}-backup.service
+
+[Install]
+WantedBy=timers.target

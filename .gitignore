@@ -1,0 +1,26 @@
+.env
+.env.*
+!.env.example
+secrets/
+private/
+artifacts/
+results/raw/
+*.sqlite*
+*.log
+__pycache__/
+.venv/
+.venv
+*.egg-info/
+build/
+dist/
+.venv*/
+.venv*
+# A virtualenv is also unpaired when it is a symlink into another checkout (a git worktree points at control's).
+# The trailing-slash patterns above match a directory only, so without the bare names a `git add -A` in a worktree
+# can track `.venv` as a symlink and overwrite a real `.venv` directory on merge.
+
+node_modules/
+
+# Finder metadata
+.DS_Store
+._*

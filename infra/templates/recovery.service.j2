@@ -1,0 +1,30 @@
+[Unit]
+Description=agent-infra recovery-only reclaim of the host the route already points at
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User={{ ansible_user }}
+WorkingDirectory={{ instance_root }}
+Environment=AGENTIAC_ROOT={{ instance_root }}
+# The claim installs a front, restarts the control-side forward and loads the model; the front waits up to
+# 1400 s for that load (scripts/borrow.py). A reclaim that outlives this window is a failure, not a slow
+# success: the next tick would start a second claim beside the one still running.
+ExecStart={{ code_root }}/bin/agentiac ops recover run
+TimeoutStartSec=1800
+# NoNewPrivileges is deliberately absent here, unlike the read-only units: a reclaim restarts the
+# control-side forward with `sudo -n systemctl start` (scripts/borrow.py start_tunnel), which is exactly
+# what `agentiac reclaim` does from a terminal. It reaches no other privilege, and nothing on a worker:
+# the sudo a claim needs there happens in the remote ssh session, as it always has.
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# What it writes: its own record under artifacts/recovery, and what ansible-core needs when the claim runs a
+# playbook - ANSIBLE_HOME redirects the tmp dir and the connection-persistence socket that default to
+# ~/.ansible. Nothing else, and deliberately not ~/.ssh: a worker whose host key changed is a failure a
+# person looks at, not something a timer may accept.
+Environment=ANSIBLE_HOME={{ instance_root }}/artifacts/recovery/ansible
+ReadWritePaths={{ instance_root }}/artifacts/recovery
+StandardOutput=journal
+StandardError=journal

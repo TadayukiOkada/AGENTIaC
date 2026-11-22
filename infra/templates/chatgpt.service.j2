@@ -1,0 +1,35 @@
+[Unit]
+Description=agent-infra ChatGPT-subscription gateway (ADR 0005)
+After=network-online.target
+Wants=network-online.target
+# Starts only after agentiac chatgpt login. Without a usable token LiteLLM would wait
+# for an interactive device-code login at startup, so the preflight refreshes the
+# token first (nothing else refreshes while the unit is down) and refuses otherwise.
+ConditionPathExists={{ instance_root }}/secrets/chatgpt/auth.json
+
+[Service]
+Type=simple
+User={{ ansible_user }}
+WorkingDirectory={{ code_root }}/gateway
+Environment=AGENTIAC_ROOT={{ instance_root }}
+EnvironmentFile={{ instance_root }}/secrets/gateway.env
+Environment=DO_NOT_TRACK=1
+Environment=LITELLM_TELEMETRY=False
+Environment=LITELLM_LOCAL_MODEL_COST_MAP=True
+Environment=PYTHONPATH={{ code_root }}/gateway
+Environment=AGENTIAC_NODES={{ instance_root }}/artifacts/gateway/nodes.json
+Environment=CHATGPT_TOKEN_DIR={{ instance_root }}/secrets/chatgpt
+Environment=AGENTIAC_CHATGPT=1
+ExecStartPre={{ code_root }}/.venv-gateway/bin/python {{ code_root }}/scripts/chatgpt-login.py --preflight
+ExecStart={{ code_root }}/.venv-gateway/bin/litellm --config {{ instance_root }}/gateway/chatgpt.yaml --host 127.0.0.1 --port {{ chatgpt_port }} --num_workers 1
+# A refused preflight (signed out, expired) waits for agentiac chatgpt login, no retry loop.
+Restart=on-abnormal
+RestartSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+MemoryMax=1G
+CPUQuota=100%
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

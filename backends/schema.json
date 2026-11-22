@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "agentiac Strata backend manifest",
+  "type": "object",
+  "required": ["id", "repository", "source_revision", "source_version", "model_repository", "model_revision", "files", "workers", "context", "status"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z0-9.-]+$"},
+    "repository": {"type": "string", "pattern": "^https://"},
+    "source_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "ggml_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "model_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "context": {"type": "integer", "minimum": 16384},
+    "contexts": {"type": "array", "items": {"type": "integer", "minimum": 16384}},
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "size", "sha256"],
+        "properties": {
+          "path": {"type": "string"},
+          "size": {"type": "integer", "minimum": 1},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }
+      }
+    },
+    "workers": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["cuda_arch"],
+        "properties": {
+          "cuda_arch": {"type": "string", "pattern": "^[0-9]+$"},
+          "vram_reserve_mib": {"type": "integer", "minimum": 0},
+          "scratch_gib": {"type": "integer", "minimum": 0},
+          "pool_workers": {"type": "integer", "minimum": 1},
+          "unified_memory": {"type": "boolean",
+                             "description": "A Jetson: the start adds --mmap-experts and checks the GPU through /dev/nvmap, not nvidia-smi"}
+        }
+      }
+    },
+    "class_args": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "Launch arguments that affect output (PA section 6): they feed class_id. Ambiguous arguments belong here."
+    },
+    "config_args": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "Launch arguments that affect performance only (PA section 6): they feed config_id, never class_id."
+    }
+  }
+}

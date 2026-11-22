@@ -1,0 +1,20 @@
+[Unit]
+Description=agent-infra upstream update check
+After=network-online.target
+
+[Service]
+Type=oneshot
+User={{ ansible_user }}
+WorkingDirectory={{ instance_root }}
+Environment=AGENTIAC_ROOT={{ instance_root }}
+ExecStart={{ code_root }}/bin/agentiac ops update check --notify
+# 3 means upstream could not be read today, which `ops update check` keeps as stale and is not a failed unit.
+SuccessExitStatus=3
+TimeoutStartSec=300
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths={{ instance_root }}/artifacts/components
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,120 @@
+- name: Start selected verified project profile
+  hosts: workers
+  gather_facts: false
+  tasks:
+    - name: Require an explicit host
+      ansible.builtin.import_tasks: tasks/require-limit.yml
+    - name: Require an explicit profile
+      ansible.builtin.assert:
+        that:
+          - model is defined
+          - model is match('^[a-z0-9-]+$')
+    - name: Read profile
+      ansible.builtin.set_fact:
+        manifest: "{{ lookup('file', '../profiles/' + model + '.json') | from_json }}"
+    # A borrowed host only serves on demand, through agentiac claim.
+    - name: Refuse always-on serving on a borrowed host
+      ansible.builtin.assert:
+        that: not (borrowed | default(false)) or (ondemand | default(false) | bool)
+        fail_msg: 'Borrowed hosts serve on demand only: agentiac claim.'
+    - name: Validate node class
+      ansible.builtin.assert:
+        that: node_class in manifest.nodes
+    - name: Check current project container ownership
+      ansible.builtin.command:
+        argv: [docker, inspect, '{{ resource_prefix }}-inference']
+      register: existing
+      check_mode: false
+      failed_when: existing.rc != 0 and 'no such object' not in (existing.stderr | lower)
+      changed_when: false
+    - name: Refuse to replace a foreign container
+      ansible.builtin.assert:
+        that: (existing.stdout | from_json)[0].Config.Labels['io.agent-infra.owner'] == 'agent-infra'
+      when: existing.rc == 0
+    - name: Check verified model and backend before touching active service
+      ansible.builtin.stat:
+        path: '{{ item }}'
+      loop:
+        - '{{ project_root }}/models/{{ model }}/{{ manifest.revision }}/verified.json'
+        - '{{ project_root }}/backends/llama-{{ manifest.backend.revision }}/runtime-sm{{ cuda_arch }}/build-metadata.txt'
+      register: prerequisites
+    - name: Require completed verified downloads and builds
+      ansible.builtin.assert:
+        that: item.stat.exists
+        fail_msg: 'Model/backend incomplete. Existing service preserved.'
+      loop: '{{ prerequisites.results }}'
+      loop_control:
+        label: '{{ item.item }}'
+    - name: Install node-specific protected API key
+      ansible.builtin.copy:
+        src: '../secrets/nodes/{{ inventory_hostname }}.key'
+        dest: '{{ project_root }}/api.key'
+        mode: '0600'
+      no_log: true
+      register: worker_key
+    - name: Copy ownership-checked stop helper
+      ansible.builtin.copy:
+        src: ../scripts/stop-project.py
+        dest: '{{ project_root }}/scripts/stop-project.py'
+        mode: '0750'
+    - name: Copy launcher
+      ansible.builtin.copy:
+        src: ../scripts/serve-profile.py
+        dest: '{{ project_root }}/scripts/serve-profile.py'
+        mode: '0750'
+      register: launcher
+    - name: Write node configuration
+      ansible.builtin.import_tasks: tasks/write-node-config.yml
+    - name: Write active profile atomically
+      ansible.builtin.copy:
+        content: '{{ manifest | to_nice_json }}'
+        dest: '{{ project_root }}/active-profile.json'
+        mode: '0640'
+      register: active_profile
+    - name: Install dedicated service
+      become: true
+      ansible.builtin.template:
+        src: templates/inference.service.j2
+        dest: '/etc/systemd/system/{{ resource_prefix }}-inference.service'
+        mode: '0644'
+      register: unit
+    # Always-on serving (agentiac ops start) replaces an on-demand front, which holds the API port.
+    - name: Stop and disable the on-demand front
+      become: true
+      ansible.builtin.shell: |
+        if systemctl is-active --quiet {{ resource_prefix }}-ondemand || systemctl is-enabled --quiet {{ resource_prefix }}-ondemand 2>/dev/null; then
+          systemctl disable --now {{ resource_prefix }}-ondemand 2>/dev/null || systemctl stop {{ resource_prefix }}-ondemand
+          echo stopped
+        fi
+      register: front
+      changed_when: "'stopped' in front.stdout"
+      when: not (ondemand | default(false) | bool)
+    # A worker whose front served a Strata manifest (inventory strata_backend) has that engine and its watch to stop
+    # too: they hold the RAM and the internal port the llama.cpp profile needs.
+    - name: Stop the Strata backend of the on-demand front
+      become: true
+      ansible.builtin.shell: |
+        for unit in {{ resource_prefix }}-strata-inference {{ resource_prefix }}-strata-watch; do
+          if systemctl is-active --quiet "$unit"; then systemctl stop "$unit"; echo "$unit"; fi
+        done
+      register: strata_stopped
+      changed_when: strata_stopped.stdout != ''
+      when: strata_backend is defined and not (ondemand | default(false) | bool)
+    - name: Start or switch only project inference
+      become: true
+      ansible.builtin.systemd_service:
+        name: '{{ resource_prefix }}-inference'
+        daemon_reload: '{{ unit.changed }}'
+        enabled: false
+        state: "{{ 'restarted' if active_profile.changed or node_config.changed | default(false) or unit.changed or worker_key.changed or launcher.changed else 'started' }}"
+      when: not (ondemand | default(false) | bool)
+    # On demand (scripts/borrow.py claim): the on-demand front starts the unit on the
+    # first request; a changed configuration only stops a loaded old one.
+    - name: Leave on-demand inference to the on-demand front
+      become: true
+      ansible.builtin.systemd_service:
+        name: '{{ resource_prefix }}-inference'
+        daemon_reload: '{{ unit.changed }}'
+        enabled: false
+        state: "{{ 'stopped' if active_profile.changed or node_config.changed | default(false) or unit.changed or worker_key.changed or launcher.changed else omit }}"
+      when: ondemand | default(false) | bool

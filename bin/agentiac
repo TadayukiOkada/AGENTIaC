@@ -1,0 +1,7 @@
+#!/bin/sh
+# agentiac command (src/agentiac/command.py); make install links it into ~/.local/bin.
+root=$(dirname "$(dirname "$(readlink -f "$0")")")
+# Hints print the name this was invoked as (agentiac.errors.command); child processes inherit it.
+AGENTIAC_COMMAND=${AGENTIAC_COMMAND:-$(basename "$0")}
+export AGENTIAC_COMMAND
+PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" exec "$root/.venv/bin/python" -m agentiac "$@"

@@ -1,0 +1,21 @@
+[Unit]
+Description=agent-infra Wi-Fi watch (diagnostics for link loss)
+After=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 {{ project_root }}/scripts/netwatch.py run --log /var/log/agent-infra/netwatch.jsonl
+Restart=always
+RestartSec=10
+Nice=10
+ProtectSystem=strict
+ProtectHome=read-only
+# wpa_cli binds its reply socket in /tmp, where wpa_supplicant must reach it (no PrivateTmp).
+ReadWritePaths=/var/log/agent-infra /tmp
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier={{ resource_prefix }}-netwatch
+
+[Install]
+WantedBy=multi-user.target

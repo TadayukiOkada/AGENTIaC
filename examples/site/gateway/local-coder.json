@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "alias": "local-coder",
+  "default": "example-alpha-strata-0.2.12-tiny-coder-gguf-q4_k_m-32k",
+  "targets": {
+    "example-alpha-strata-0.2.12-tiny-coder-gguf-q4_k_m-32k": {
+      "source_alias": "example-alpha-worker",
+      "node": "example-alpha",
+      "backend": "strata-0.2.12-tiny-coder-gguf-q4_k_m",
+      "context_window": 32768,
+      "max_tokens": 4096
+    },
+    "example-beta-strata-0.2.12-tiny-coder-gguf-q4_k_m-32k": {
+      "source_alias": "example-beta-worker-tiny",
+      "node": "example-beta",
+      "backend": "strata-0.2.12-tiny-coder-gguf-q4_k_m",
+      "context_window": 32768,
+      "max_tokens": 4096
+    }
+  },
+  "legacy_targets": {},
+  "legacy_sources": {}
+}

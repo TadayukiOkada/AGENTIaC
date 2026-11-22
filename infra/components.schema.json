@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "agentiac declared components",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["id", "kind", "owner", "hosts", "source", "policy"],
+    "additionalProperties": false,
+    "properties": {
+      "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+      "kind": {"enum": ["agent", "python", "engine", "model", "base-image", "ci", "skill", "driver", "os"]},
+      "owner": {"enum": ["project", "user", "vendor"]},
+      "hosts": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+      "policy": {"enum": ["frozen", "manual", "notify"]},
+      "gate": {"type": "string", "minLength": 1},
+      "source": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["type", "package"],
+            "additionalProperties": false,
+            "properties": {
+              "type": {"const": "npm"},
+              "package": {"type": "string", "pattern": "^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$"}
+            }
+          },
+          {
+            "type": "object",
+            "required": ["type", "package"],
+            "additionalProperties": false,
+            "properties": {
+              "type": {"const": "pypi"},
+              "package": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"}
+            }
+          },
+          {
+            "type": "object",
+            "required": ["type", "repository"],
+            "additionalProperties": false,
+            "properties": {
+              "type": {"enum": ["github", "huggingface"]},
+              "repository": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"}
+            }
+          },
+          {
+            "type": "object",
+            "required": ["type", "image", "tag"],
+            "additionalProperties": false,
+            "properties": {
+              "type": {"const": "digest"},
+              "image": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$"},
+              "tag": {"type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9._-]*$"}
+            }
+          },
+          {
+            "type": "object",
+            "required": ["type"],
+            "additionalProperties": false,
+            "properties": {
+              "type": {"const": "observed"}
+            }
+          }
+        ]
+      },
+      "pin": {
+        "type": "object",
+        "required": ["lock"],
+        "anyOf": [{"required": ["version"]}, {"required": ["revision"]}, {"required": ["digest"]}],
+        "additionalProperties": false,
+        "properties": {
+          "lock": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.)[A-Za-z0-9._/-]+$"},
+          "version": {"type": "string", "minLength": 1},
+          "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

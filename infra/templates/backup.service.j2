@@ -1,0 +1,25 @@
+[Unit]
+Description=agent-infra control backup of the evaluation records (IP-15)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User={{ ansible_user }}
+WorkingDirectory={{ instance_root }}
+Environment=AGENTIAC_ROOT={{ instance_root }}
+ExecStart={{ code_root }}/bin/agentiac ops backup run
+# Uploading 1.1 GiB to the owner's Drive and hashing it back is a long one-shot. A run that outlives
+# this window is a failure, not a slow success: the next one would overwrite the record half-done.
+TimeoutStartSec=7200
+# The archive is built from the trees an evaluation is still reading, and the upload is the slow part.
+Nice=15
+IOWeight=50
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+# artifacts/ is what it writes (the staging archive and the record), and rclone rewrites its own
+# config there when the Drive token refreshes. Nothing else on this host is writable to it.
+ReadWritePaths={{ instance_root }}/artifacts {{ rclone_config_dir }}
+StandardOutput=journal
+StandardError=journal

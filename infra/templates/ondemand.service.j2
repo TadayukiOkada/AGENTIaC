@@ -1,0 +1,12 @@
+[Unit]
+Description=agent-infra on-demand front (ADR 0004)
+After=network-online.target docker.service
+
+[Service]
+User={{ ansible_user }}
+ExecStart=/usr/bin/python3 {{ directory }}/proxy.py {{ directory }}/config.json
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

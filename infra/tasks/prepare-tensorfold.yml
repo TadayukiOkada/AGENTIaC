@@ -1,0 +1,40 @@
+- name: Create the preparation directory
+  ansible.builtin.file:
+    path: '{{ project_root }}/backend-manifests'
+    state: directory
+    mode: '0750'
+- name: Copy the pinned TensorFold manifest
+  ansible.builtin.copy:
+    src: ../backends/tf-1.1.4-qfn-mxfp8-nvfp4.json
+    dest: '{{ project_root }}/backend-manifests/spark-tensorfold.json'
+    mode: '0640'
+- name: Copy the preparation script
+  ansible.builtin.copy:
+    src: ../scripts/spark-tensorfold-prepare.py
+    dest: '{{ project_root }}/scripts/spark-tensorfold-prepare.py'
+    mode: '0750'
+- name: Inspect the current preparation job
+  ansible.builtin.command:
+    argv: [systemctl, is-active, '{{ resource_prefix }}-tensorfold-prepare']
+  register: preparing
+  check_mode: false
+  failed_when: false
+  changed_when: false
+# The docker build runs under dockerd, so these limits cover the script and checksums, not the build.
+- name: Start the persistent preparation
+  become: true
+  ansible.builtin.command:
+    argv:
+      - systemd-run
+      - '--unit={{ resource_prefix }}-tensorfold-prepare'
+      - --collect
+      - --uid={{ ansible_user }}
+      - --property=Nice=10
+      - --property=IOSchedulingClass=idle
+      - --property=RuntimeMaxSec=4h
+      - /usr/bin/python3
+      - '{{ project_root }}/scripts/spark-tensorfold-prepare.py'
+      - '{{ project_root }}/backend-manifests/spark-tensorfold.json'
+      - '{{ project_root }}'
+  when: preparing.stdout != "active"
+  changed_when: true

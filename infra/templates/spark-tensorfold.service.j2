@@ -1,0 +1,8 @@
+[Unit]
+Description=agent-infra Spark TensorFold coding backend
+After=docker.service
+[Service]
+User={{ ansible_user }}
+ExecStart=/usr/bin/python3 {{ directory }}/worker.py
+TimeoutStopSec=45
+UMask=0077

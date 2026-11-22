@@ -1,0 +1,46 @@
+- name: Build isolated pinned CUDA backend
+  hosts: workers
+  gather_facts: false
+  tasks:
+    - name: Require an explicit host
+      ansible.builtin.import_tasks: tasks/require-limit.yml
+    - name: Create project directories
+      ansible.builtin.file:
+        path: '{{ project_root }}/{{ item }}'
+        state: directory
+        mode: '0750'
+      loop: [scripts, logs, models, profiles, backends]
+    - name: Copy reproducible build script
+      ansible.builtin.copy:
+        src: ../scripts/build-backend.sh
+        dest: '{{ project_root }}/scripts/build-backend.sh'
+        mode: '0750'
+    - name: Inspect existing build
+      ansible.builtin.stat:
+        path: '{{ project_root }}/backends/llama-{{ backend_revision }}/runtime-sm{{ cuda_arch }}/build-metadata.txt'
+      register: build
+    - name: Inspect existing build job
+      ansible.builtin.command:
+        argv: [systemctl, is-active, '{{ resource_prefix }}-build']
+      register: building
+      check_mode: false
+      failed_when: false
+      changed_when: false
+    - name: Launch persistent resource-limited build
+      become: true
+      ansible.builtin.command:
+        argv:
+          - systemd-run
+          - '--unit={{ resource_prefix }}-build'
+          - --collect
+          - --uid={{ ansible_user }}
+          - --property=CPUQuota={{ build_jobs * 100 }}%
+          - --property=MemoryMax=12G
+          - --property=Nice=10
+          - '{{ project_root }}/scripts/build-backend.sh'
+          - '{{ project_root }}'
+          - '{{ backend_revision }}'
+          - '{{ cuda_arch }}'
+          - '{{ build_jobs | string }}'
+      when: not build.stat.exists and building.stdout != "active"
+      changed_when: true

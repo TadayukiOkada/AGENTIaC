@@ -1,0 +1,14 @@
+[Unit]
+Description=Test that the control backup can be restored, once a month (IP-15)
+
+[Timer]
+# A day-of-month only, so this fires exactly once a month. The 8th at 05:10 stays clear of the Sunday 04:30
+# backup even in a month whose 8th is a Sunday, and `Persistent=true` makes a missed month run late.
+OnCalendar=*-*-08 05:10:00
+Persistent=true
+AccuracySec=10min
+RandomizedDelaySec=20min
+Unit={{ resource_prefix }}-backup-verify.service
+
+[Install]
+WantedBy=timers.target

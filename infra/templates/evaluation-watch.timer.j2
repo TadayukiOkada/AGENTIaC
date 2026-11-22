@@ -1,0 +1,11 @@
+[Unit]
+Description=Check agent-infra evaluation progress every15minutes
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+AccuracySec=30s
+Unit={{ resource_prefix }}-evaluation-watch.service
+
+[Install]
+WantedBy=timers.target

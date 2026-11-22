@@ -1,0 +1,51 @@
+- name: Prepare isolated backend compatibility probe
+  hosts: workers
+  gather_facts: false
+  tasks:
+    - name: Require an explicit host
+      ansible.builtin.import_tasks: tasks/require-limit.yml
+    - name: Validate backend manifest identifier
+      ansible.builtin.assert:
+        that:
+          - backend_probe is defined
+          - backend_probe is match('^[a-z0-9-]+$')
+    - name: Create manifest directory
+      ansible.builtin.file:
+        path: '{{ project_root }}/backend-manifests'
+        state: directory
+        mode: '0750'
+    - name: Copy reviewed backend manifest
+      ansible.builtin.copy:
+        src: '../backends/{{ backend_probe }}.json'
+        dest: '{{ project_root }}/backend-manifests/{{ backend_probe }}.json'
+        mode: '0640'
+    - name: Copy isolated probe
+      ansible.builtin.copy:
+        src: ../scripts/probe-backend.py
+        dest: '{{ project_root }}/scripts/probe-backend.py'
+        mode: '0750'
+    - name: Check current probe job
+      ansible.builtin.command:
+        argv: [systemctl, is-active, '{{ resource_prefix }}-backend-probe-{{ backend_probe }}']
+      register: probing
+      check_mode: false
+      failed_when: false
+      changed_when: false
+    - name: Start bounded persistent probe
+      become: true
+      ansible.builtin.command:
+        argv:
+          - systemd-run
+          - '--unit={{ resource_prefix }}-backend-probe-{{ backend_probe }}'
+          - --collect
+          - --uid={{ ansible_user }}
+          - --property=CPUQuota=200%
+          - --property=MemoryMax=5G
+          - --property=RuntimeMaxSec=8h
+          - /usr/bin/python3
+          - '{{ project_root }}/scripts/probe-backend.py'
+          - '--container={{ resource_prefix }}-backend-probe'
+          - '{{ project_root }}'
+          - '{{ project_root }}/backend-manifests/{{ backend_probe }}.json'
+      when: probing.stdout != "active"
+      changed_when: true
