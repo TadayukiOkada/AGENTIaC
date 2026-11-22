@@ -34,23 +34,22 @@ CORE_DOCS = frozenset({'README.md', 'development.md', 'agents.md', 'documentatio
 # tests/test_layout.py keeps this list the exact complement of tests/example-site.txt.
 SITE_TEST_MODULES = frozenset({
     'test_adapters', 'test_archived_task_keys', 'test_backend_names', 'test_bfcl_target',
-    'test_catalog', 'test_chatgpt_auth', 'test_claude_repository', 'test_codex_frontend',
-    'test_codex_repository', 'test_command', 'test_compaction_e2e', 'test_compaction_guard', 'test_components',
+    'test_catalog', 'test_claude_repository', 'test_codex_frontend',
+    'test_codex_repository', 'test_compaction_e2e', 'test_components',
     'test_dashboard_release_layout', 'test_declared',
     'test_engine_catalog', 'test_eval_image', 'test_evidence',
     'test_failures', 'test_glm_monitor',
-    'test_health_scope', 'test_iac', 'test_identities', 'test_identity',
+    'test_health_scope', 'test_iac', 'test_identities',
     'test_local_coder', 'test_management', 'test_management_cache', 'test_management_contract',
     'test_management_deployments', 'test_management_engines', 'test_management_relations', 'test_model_names',
     'test_observe', 'test_pi_repository',
-    'test_retention', 'test_retire', 'test_restore_document', 'test_router', 'test_services',
+    'test_retention', 'test_retire', 'test_restore_document',
     'test_short_aliases', 'test_skills', 'test_storage',
     'test_strata_context', 'test_strata_prepare', 'test_strata_roots', 'test_strata_scope', 'test_strata_start',
-    'test_suite', 'test_task_key', 'test_tasklog',
+    'test_suite',
     'test_tool_loop_audit', 'test_tool_loop_reduction', 'test_updates', 'test_upgrade'})
 SITE_TESTS = frozenset({f'tests/{name}.py' for name in SITE_TEST_MODULES} | {
-    'tests/records.py', 'tests/golden/pi-invocation.json', 'tests/compaction_guard_harness.mjs',
-    'tests/router_harness.mjs', 'tests/skills_harness.mjs', 'dashboard/tests/smoke.mjs'})
+    'tests/records.py', 'tests/golden/pi-invocation.json', 'tests/skills_harness.mjs', 'dashboard/tests/smoke.mjs'})
 REVIEW_PREFIXES = ()                 # M9 settled the last ones (agents/skills/, agents/jetson-skills.json): site
 REVIEW_FILES = frozenset()
 
