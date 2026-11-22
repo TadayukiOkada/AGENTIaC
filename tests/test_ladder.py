@@ -131,3 +131,27 @@ class IdentityGuardTests(unittest.TestCase):
             self.assertEqual(served, OTHER)
             self.assertEqual([(entry['position'], entry['served']['backend_id']) for entry in checks],
                              [('before', 'strata-qwen38-iq3xxs-0.2.12')])
+
+    def test_compare_runs_computes_medians_deltas_and_markdown_table(self):
+        base_rows = [
+            {'case': '4096-1', 'depth': 4096, 'status': 'ok', 'answer_passed': True,
+             'decode_tok_s': 20.0, 'prefill_tok_s': 400.0, 'cold_ttft_s': 10.0},
+            {'case': '4096-2', 'depth': 4096, 'status': 'ok', 'answer_passed': True,
+             'decode_tok_s': 20.0, 'prefill_tok_s': 400.0, 'cold_ttft_s': 10.0},
+        ]
+        cand_rows = [
+            {'case': '4096-1', 'depth': 4096, 'status': 'ok', 'answer_passed': True,
+             'decode_tok_s': 25.0, 'prefill_tok_s': 500.0, 'cold_ttft_s': 8.0},
+            {'case': '4096-2', 'depth': 4096, 'status': 'ok', 'answer_passed': True,
+             'decode_tok_s': 25.0, 'prefill_tok_s': 500.0, 'cold_ttft_s': 8.0},
+        ]
+        report = ladder.compare_runs(
+            'base-run', base_rows, {'corpus_revision': 'abc'},
+            'cand-run', cand_rows, {'corpus_revision': 'abc'},
+        )
+        self.assertTrue(report['corpus_match'])
+        self.assertEqual(report['pooled_decode_ratio'], 1.25)
+        self.assertEqual(report['depths'][0]['decode']['delta_pct'], 25.0)
+        self.assertEqual(report['depths'][0]['cold_ttft']['delta_pct'], -20.0)
+        table = ladder.format_comparison(report)
+        self.assertIn('| 4096 | 20.0 (20.0–20.0) | 25.0 (25.0–25.0) | +25.00% | +25.00% | -20.00% | 2/2 / 2/2 |', table)

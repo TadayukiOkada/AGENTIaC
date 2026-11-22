@@ -311,6 +311,23 @@ class StrataBackendStartTests(unittest.TestCase):
         self.assertEqual(command[-2:], ['--config', '/r/runtime-claim-config.json'])
         self.assertNotIn('--select', command)
 
+    def test_serve_command_uses_terminal_subdir_for_0216_plus_layout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = root / 'legacy'
+            (legacy / 'source/serve').mkdir(parents=True)
+            (legacy / 'source/serve/server.py').write_text('# legacy')
+            cmd_legacy = runner.serve_command(legacy, legacy / 'rt.json', 18090, [], 'agentiac-strata-inference')
+            self.assertIn(f'--working-directory={legacy / "source"}', cmd_legacy)
+            self.assertIn(str(legacy / 'source/serve/server.py'), cmd_legacy)
+
+            modern = root / 'modern'
+            (modern / 'source/terminal/serve').mkdir(parents=True)
+            (modern / 'source/terminal/serve/server.py').write_text('# modern')
+            cmd_modern = runner.serve_command(modern, modern / 'rt.json', 18090, [], 'agentiac-strata-inference')
+            self.assertIn(f'--working-directory={modern / "source/terminal"}', cmd_modern)
+            self.assertIn(str(modern / 'source/terminal/serve/server.py'), cmd_modern)
+
     def test_unlisted_context_is_refused_before_anything_is_written(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = write_manifest(directory, 'gyro', GYRO_MANIFEST)
