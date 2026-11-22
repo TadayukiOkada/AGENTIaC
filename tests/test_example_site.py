@@ -4,6 +4,8 @@ Class A: it reads examples/site, which is a core path, and the core's own files.
 examples/site with the site this runs against, and skips when that site is examples/site itself.
 """
 from pathlib import Path
+import re
+import subprocess
 import sys
 import unittest
 
@@ -50,6 +52,33 @@ class ExampleSiteTests(unittest.TestCase):
         found = [f'{path.relative_to(EXAMPLE)}: {match}' for path in sorted(EXAMPLE.rglob('*')) if path.is_file()
                  and pattern for match in pattern.findall(path.read_text())]
         self.assertEqual(found, [])
+
+    def test_every_relative_markdown_link_in_the_core_resolves(self):
+        done = subprocess.run(['git', '-C', str(CODE), 'ls-files', '*.md'], capture_output=True, text=True)
+        if done.returncode != 0:
+            self.skipTest('git ls-files failed')
+        link_re = re.compile(r'\[([^\]]+)\]\(([^)]+)\)')
+        fence_re = re.compile(r'```.*?```', re.S)
+        broken = []
+        for rel in [line for line in done.stdout.splitlines() if line]:
+            path = CODE / rel
+            text = fence_re.sub('', path.read_text(encoding='utf-8'))
+            for _label, target in link_re.findall(text):
+                if target.startswith(('http://', 'https://', '#')):
+                    continue
+                file_part, _, fragment = target.partition('#')
+                if not file_part:
+                    continue
+                resolved = (path.parent / file_part).resolve()
+                if not resolved.exists():
+                    broken.append(f'{rel} -> {target}')
+                    continue
+                if fragment and resolved.is_file() and resolved.suffix == '.md':
+                    headings = {re.sub(r'[^a-z0-9 -]', '', line.lstrip('#').strip().lower()).replace(' ', '-')
+                                for line in resolved.read_text(encoding='utf-8').splitlines() if line.startswith('#')}
+                    if fragment not in headings:
+                        broken.append(f'{rel} -> {target} (missing #{fragment})')
+        self.assertEqual(broken, [])
 
 
 if __name__ == '__main__':

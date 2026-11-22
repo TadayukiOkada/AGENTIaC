@@ -1,9 +1,9 @@
 # Agent frontend reference
 
-Status: current frontend contract. [Daily usage](usage.md) owns interactive pi
+Status: current frontend contract. `agentiac code` owns interactive pi
 worktrees and sessions; this page owns Suite adapter selection, pin validation and capability reporting.
-See [evaluation](testing.md) for grading/provenance and [operations](operations.md#reinstalling-pi) for pi installation.
-Earlier frontend research and pilots in the site archive retain their original conditions;
+See [development](development.md) for control environment setup, test execution and component pin checks.
+Earlier frontend research and pilots in a site archive retain their original conditions;
 their success is not a current support matrix or a fair frontend speed ranking.
 
 ## Agents in the suite
@@ -15,7 +15,7 @@ existed.
 ```sh
 agentiac agent list --capabilities      # what is pinned, and what was actually probed
 agentiac agent capabilities claude-code
-agentiac agent probe codex apply_patch --alias local-coder-spark
+agentiac agent probe codex apply_patch --alias local-coder
 scripts/pin-agent.py claude-code --check   # the same comparison a run makes
 ```
 

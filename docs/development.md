@@ -1,7 +1,7 @@
 # Development and control setup
 
-Status: source-checkout workflow, verified against pyproject.toml, Makefile and CI at `15882d3`.
-Run commands from `~/src/AGENTIaC`. Follow the [root bootstrap](../README.md#control-environment)
+Status: source-checkout workflow, verified against pyproject.toml, Makefile and CI.
+Run commands from `~/src/AGENTIaC` (or `core/` inside a site checkout). Follow the [root bootstrap](../README.md#control-environment)
 using locked control, gateway and lint dependencies and Python 3.12; pyproject requires Python >=3.12.
 `make install` links the CLI and installs bash completion. An installed wheel alone does not provision this checkout.
 
@@ -77,8 +77,8 @@ agentiac model names --write
 agentiac model compatibility --write
 ```
 
-These generate [bindings](model-names.md) and [compatibility](compatibility.md); tests compare their bytes.
-Changing short aliases must preserve the [naming contract](model-naming.md), routing/identity gates,
+These generate `docs/model-names.md` and `docs/compatibility.md` in the site repository; contract tests compare their bytes.
+Changing short aliases must preserve the node-first naming contract, routing/identity gates,
 restricted task policy and historical target/case IDs. A manifest/declaration edit does not attest a loaded process.
 
 Update commands parse PA §8.1 and execution-plan approval table rows directly. Preserve their headings,
@@ -145,8 +145,8 @@ answer and a directory is metadata and not a body.
 
 ## Dashboard prototype (local only)
 
-See the [local management dashboard guide](dashboard.md) for the isolated dependency environment,
-owner initialization, build/start, explicit worker target allowlist, process recovery and validation.
-The [design plan](dashboard-design.md) tracks remaining rollout gates.
+`dashboard/` and `src/agentiac/management/` implement the local management dashboard and minimal-probe
+worker using the isolated `.venv-dashboard` environment (`requirements-dashboard.lock`), owner session
+initialization, explicit worker target allowlist and process recovery (`agentiac dashboard --help`).
 Control/gateway locks are unchanged; optional dashboard tests must run with the dashboard interpreter.
 Full `make check` in an isolated worktree still needs the existing control Ansible executable.

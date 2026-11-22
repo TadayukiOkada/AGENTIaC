@@ -1,9 +1,8 @@
 # ADR 0009: Detect and propose automatically, apply by approval
 
-Status: accepted (user decision: U1 to U6 of
-[platform-architecture.md](../platform-architecture.md) section 18, as recommended). Partly implemented: declared graph, component/update
-reporting, configuration identities, evidence, recommendations and agent adapters exist. See
-[execution-plan](../execution-plan.md) for individual task status.
+Status: accepted (user decision: U1 to U6 of the platform architecture design, section 18, as recommended).
+Partly implemented: declared graph, component/update reporting, configuration identities, evidence,
+recommendations and agent adapters exist. See the site's execution plan for individual task status.
 
 Context: an external proposal asked for a unified platform with a single manifest, a reconciler, automatic
 pruning, automatic model selection and validated automatic updates. Its diagnosis matched the repository: pi
