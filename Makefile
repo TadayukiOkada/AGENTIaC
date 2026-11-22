@@ -44,7 +44,7 @@ example-check:
 # the site, the dated-line grep (only m9-dated-lines.md's data lines may remain) and gitleaks. Needs the pinned gitleaks:
 # scripts/gitleaks-install.sh [PATH] (default .venv-lint/bin/gitleaks; `make publish-scan GITLEAKS=PATH` to use another).
 GITLEAKS ?= .venv-lint/bin/gitleaks
-REHEARSAL ?= $(if $(wildcard ../infra/inventory.yml),$(abspath ../..))
+REHEARSAL ?= $(if $(wildcard ../infra/inventory.yml),$(abspath ..))
 publish-scan:
 	@test -x $(GITLEAKS) || { echo "gitleaks is not installed at $(GITLEAKS): run scripts/gitleaks-install.sh $(GITLEAKS)" >&2; exit 2; }
 	$(PYTHON) scripts/publish-scan.py --gitleaks $(GITLEAKS) $(if $(REHEARSAL),--rehearsal $(REHEARSAL))

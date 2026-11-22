@@ -749,9 +749,13 @@ def _insert_inventory_root(text, host, key, root_path):
     entry_indent = roots_indent + 2
     for i in range(roots_idx + 1, end_idx):
         stripped = lines[i].strip()
-        if not stripped or stripped.startswith('#'):
+        if not stripped:
             continue
         indent = len(lines[i]) - len(lines[i].lstrip(' '))
+        if stripped.startswith('#'):
+            if indent > roots_indent:
+                insert_at = i + 1
+            continue
         if indent <= roots_indent:
             break
         entry_indent = indent

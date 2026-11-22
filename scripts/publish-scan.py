@@ -85,7 +85,7 @@ def site_literals(core, site):
 
 
 def scan(rehearsal, gitleaks):
-    site = rehearsal / 'site'
+    site = rehearsal / 'site' if (rehearsal / 'site' / 'core').is_dir() else rehearsal
     core = site / 'core'
     failed = False
 
