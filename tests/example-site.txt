@@ -13,6 +13,7 @@ test_claims
 test_cli
 test_client
 test_command
+test_compaction_e2e
 test_compaction_guard
 test_connectivity_watch
 test_context_probe
@@ -24,6 +25,7 @@ test_engine_catalog
 test_errors
 test_evaluation_watch
 test_example_site
+test_failures
 test_former_names
 test_gateway_aliases
 test_gateway_log
@@ -37,6 +39,7 @@ test_layout
 test_loop_guard
 test_mutation
 test_netwatch
+test_observe
 test_ondemand
 test_paths
 test_pathwatch
@@ -51,6 +54,7 @@ test_repo_budget
 test_repo_output_limit
 test_repo_recovery
 test_restore
+test_retire
 test_retire_worker
 test_route_deploy
 test_router
@@ -62,7 +66,9 @@ test_site_literals
 test_spark_tensorfold_worker
 test_state
 test_status_script
+test_strata_roots
 test_strata_watch
+test_suite
 test_task_key
 test_tasklog
 test_telemetry

@@ -35,17 +35,16 @@ CORE_DOCS = frozenset({'README.md', 'development.md', 'agents.md', 'documentatio
 SITE_TEST_MODULES = frozenset({
     'test_adapters', 'test_archived_task_keys', 'test_backend_names', 'test_bfcl_target',
     'test_catalog', 'test_claude_repository', 'test_codex_frontend',
-    'test_codex_repository', 'test_compaction_e2e', 'test_components',
+    'test_codex_repository', 'test_components',
     'test_dashboard_release_layout', 'test_declared',
     'test_eval_image', 'test_evidence',
-    'test_failures', 'test_glm_monitor',
+    'test_glm_monitor',
     'test_health_scope', 'test_iac', 'test_identities',
     'test_local_coder', 'test_model_names',
-    'test_observe', 'test_pi_repository',
-    'test_retention', 'test_retire', 'test_restore_document',
+    'test_pi_repository',
+    'test_retention', 'test_restore_document',
     'test_short_aliases', 'test_skills', 'test_storage',
-    'test_strata_context', 'test_strata_prepare', 'test_strata_roots', 'test_strata_scope', 'test_strata_start',
-    'test_suite',
+    'test_strata_context', 'test_strata_prepare', 'test_strata_scope', 'test_strata_start',
     'test_tool_loop_audit', 'test_tool_loop_reduction', 'test_updates', 'test_upgrade'})
 SITE_TESTS = frozenset({f'tests/{name}.py' for name in SITE_TEST_MODULES} | {
     'tests/records.py', 'tests/golden/pi-invocation.json', 'tests/skills_harness.mjs', 'dashboard/tests/smoke.mjs'})
