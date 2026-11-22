@@ -7,6 +7,7 @@
 # (class C, despite the pattern); the tests that load scripts/archive/ read the site's archive (class C, D8.1).
 test_aggregate
 test_audit
+test_backup
 test_claims
 test_cli
 test_client
@@ -14,10 +15,14 @@ test_connectivity_watch
 test_context_probe
 test_dashboard_operations
 test_declared_settings
+test_doctor
+test_drift
 test_errors
 test_evaluation_watch
 test_example_site
 test_former_names
+test_gateway_aliases
+test_gateway_log
 test_gateway_ports
 test_graders
 test_hardware
@@ -34,6 +39,7 @@ test_pi_pin
 test_protocol
 test_publish_scan
 test_reasoning_options
+test_recovery
 test_rename_core
 test_repo
 test_repo_budget
@@ -44,6 +50,7 @@ test_retire_worker
 test_route_deploy
 test_secrets
 test_serve_profile
+test_sessions
 test_site_literals
 test_spark_tensorfold_worker
 test_state
