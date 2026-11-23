@@ -11,6 +11,8 @@ import datetime
 import json
 import os
 from pathlib import Path
+import re
+import shlex
 from types import SimpleNamespace
 import subprocess
 import sys
@@ -823,6 +825,11 @@ def completion(args):
     """Bash completion generated from the parser, so it never falls behind the commands."""
     words, values, files = {}, {}, set()
     hidden = legacy_names()
+    prog = cli_name()
+    ident = re.sub(r'[^A-Za-z0-9_]', '_', prog)
+    if not ident or not (ident[0].isalpha() or ident[0] == '_'):
+        ident = f'cmd_{ident}'
+    fn = f'_{ident}'
 
     def offered(action):
         return [c for c in action.choices if not (getattr(action, 'offer_node_first', False) and c in hidden)]
@@ -848,22 +855,22 @@ def completion(args):
 
     walk(build_parser(former=False), 'agentiac')  # bash arrays take no empty key
     table = ''.join(f'  [{json.dumps(k)}]={json.dumps(v)}\n' for k, v in sorted({**words, **values}.items()))
-    print(f'''# agentiac bash completion (agentiac completion)
-declare -gA _agentiac_words=(
+    print(f'''# {prog} bash completion ({prog} completion)
+declare -gA {fn}_words=(
 {table})
-_agentiac_files=" {' '.join(sorted(k.replace(' ', '_') for k in files))} "
-_agentiac() {{
+{fn}_files=" {' '.join(sorted(k.replace(' ', '_') for k in files))} "
+{fn}() {{
   local cur=${{COMP_WORDS[COMP_CWORD]}} prev=${{COMP_WORDS[COMP_CWORD-1]}} key=agentiac w
   for w in "${{COMP_WORDS[@]:1:COMP_CWORD-1}}"; do
-    [[ -n ${{_agentiac_words["$key $w"]+x}} && $w != -* ]] && key="$key $w"
+    [[ -n ${{{fn}_words["$key $w"]+x}} && $w != -* ]] && key="$key $w"
   done
-  if [[ -n ${{_agentiac_words["$key $prev"]+x}} && $prev == -* ]]; then
-    COMPREPLY=($(compgen -W "${{_agentiac_words["$key $prev"]}}" -- "$cur")); return
+  if [[ -n ${{{fn}_words["$key $prev"]+x}} && $prev == -* ]]; then
+    COMPREPLY=($(compgen -W "${{{fn}_words["$key $prev"]}}" -- "$cur")); return
   fi
-  if [[ $cur != -* && $_agentiac_files == *" ${{key// /_}} "* ]]; then COMPREPLY=(); return; fi
-  COMPREPLY=($(compgen -W "${{_agentiac_words[$key]}}" -- "$cur"))
+  if [[ $cur != -* && ${fn}_files == *" ${{key// /_}} "* ]]; then COMPREPLY=(); return; fi
+  COMPREPLY=($(compgen -W "${{{fn}_words[$key]}}" -- "$cur"))
 }}
-complete -o default -F _agentiac agentiac''')
+complete -o default -F {fn} {shlex.quote(prog)}''')
     return 0
 
 
