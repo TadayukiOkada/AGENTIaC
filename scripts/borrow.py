@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -128,20 +129,27 @@ def service_spec(manifest, name):
     for the host-side worker and the identity checks to read.
     """
     worker = (manifest.get('workers') or {}).get(name) or {}
-    declared_service = worker.get('service')
-    if not declared_service:
+    if 'service' not in worker or worker['service'] is None:
         return None
+    declared_service = worker['service']
+    if not isinstance(declared_service, dict):
+        raise SystemExit(explain(f'the service this manifest declares for {name} is not usable',
+                                 ['`service` must be a mapping with `unit`, `port` and `root`'],
+                                 'grep -n -A 12 "workers" backends/<manifest>.json',
+                                 'fix the `service:` block, or drop it and let the Strata rules serve this manifest'))
     unit, port, root = declared_service.get('unit'), declared_service.get('port'), declared_service.get('root')
     container, status_path = declared_service.get('container'), declared_service.get('status_path')
     start_timeout_s = declared_service.get('start_timeout_s')
     problems = []
-    if not isinstance(unit, str) or not unit.startswith(f'{PREFIX}-'):
+    if (not isinstance(unit, str) or not unit.startswith(f'{PREFIX}-')
+            or not re.fullmatch(r'[a-z0-9][a-z0-9-]*', unit.removeprefix(f'{PREFIX}-'))):
         problems.append(('unit', f'must be a name this site deploys: <resource_prefix>-<role>, so `{PREFIX}-...`'))
     if not isinstance(port, int) or isinstance(port, bool) or not 1024 <= port <= 65535:
         problems.append(('port', 'must be the internal port the front reaches, an int in 1024..65535'))
-    if not isinstance(root, str) or not root.startswith('/'):
+    if (not isinstance(root, str) or not root.startswith('/') or not root.rstrip('/')
+            or '..' in Path(root).parts or not re.fullmatch(r'/[A-Za-z0-9._/-]+', root)):
         problems.append(('root', 'must be an absolute worker directory'))
-    if container is not None and (not isinstance(container, str) or not container):
+    if container is not None and (not isinstance(container, str) or not container or any(c.isspace() for c in container)):
         problems.append(('container', 'when declared, must be the container name'))
     if status_path is not None and (not isinstance(status_path, str) or not status_path.startswith('/')):
         problems.append(('status_path', 'when declared, must be a route like /health'))
@@ -367,21 +375,22 @@ def ondemand_config(name, host, idle_minutes, backend=None, context=None, engine
                       # the front reports what it serves from this manifest (IP-02, T4.1)
                       'manifest_file': f'{root}/backend-manifest.json'}
     internal = host['ondemand_backend_port']
-    declared = manifest_service(name, backend)
-    if declared:
+    service = manifest_service(name, backend)
+    if service:
         # An engine that serves from an image or a container has no Strata trial root and no `<prefix>-strata-inference`
         # unit, so its manifest says how it is served and this resolves the same three facts a claim needs: the root
         # the launch files live in, the unit that holds the internal port, and that port. The start and stop stay
         # "the unit the project owns", which is what releases the GPU. A manifest that declares a service is served
         # that way even on a host that also runs Strata trials: the declaration is the more specific statement.
-        root, unit = declared['root'], declared['unit']
-        return root, {'listen_port': host['backend_port'], 'backend_port': declared['port'],
+        root, unit = service['root'], service['unit']
+        listen = host['strata_api_port'] if host.get('backend') == 'strata' else host['backend_port']
+        return root, {'listen_port': listen, 'backend_port': service['port'],
                       'key_file': f'{root}/api.key', 'unit': unit,
-                      'container': declared['container'], 'status_path': declared['status_path'],
+                      'container': service['container'], 'status_path': service['status_path'],
                       'start': ['sudo', '-n', 'systemctl', 'start', unit],
                       'stop': ['sudo', '-n', 'systemctl', 'stop', unit],
                       'idle_s': int(idle_minutes * 60),
-                      'start_timeout_s': declared['start_timeout_s'] or 1300,
+                      'start_timeout_s': service['start_timeout_s'] or 1300,
                       # shown by the front's status, and what the gateway's identity comparison expects (IP-02, T4.1)
                       'backend': backend, 'context': context,
                       'manifest_file': f'{root}/backend-manifest.json'}
@@ -435,7 +444,7 @@ def install_front(name, host, directory):
 
 def installed_unit_roles():
     """The roles `infra/unit.yml` can install, read from its own `units:` map (that file is what makes a unit's text)."""
-    play = yaml.safe_load((ROOT / 'infra' / 'unit.yml').read_text())
+    play = yaml.safe_load((CODE / 'infra' / 'unit.yml').read_text())
     return set(((play[0].get('vars') or {}).get('units') or {}))
 
 
@@ -464,13 +473,13 @@ def prepare_backend(name, host, config, backend=None):
             raise SystemExit('could not prepare Spark TensorFold worker')
         run_playbook('unit', name, '-e', 'unit=spark-tensorfold', '-e', f'directory={root}')
         return
-    declared = manifest_service(name, backend)
-    if declared:
-        role = declared['unit'].removeprefix(f'{PREFIX}-')
+    service = manifest_service(name, backend)
+    if service:
+        role = service['unit'].removeprefix(f'{PREFIX}-')
         if role not in installed_unit_roles():
             raise SystemExit(missing_unit(role))
-        root = declared['root']
-        made = on_host(host, ['mkdir', '-p', f'{root}/watch'])
+        root = service['root']
+        made = on_host(host, [f'umask 077 && mkdir -p {root}/watch'])
         key = api_key(name, host)
         written = on_host(host, [f'umask 077 && cat > {root}/api.key'], input=f'{key}\n')
         failed = made.returncode or written.returncode
@@ -557,11 +566,11 @@ def enable_ondemand(name, host, idle_minutes, backend=None, context=None, engine
     # carries the TensorFold manifest as `backend` (T4.1), but that config has no `backend` field and the watch's stop
     # rules name the Strata unit, so a bare TensorFold claim must not start the trial watch. A manifest that declares
     # its own service is a trial of the same kind: it is claimed, loaded on demand, and has to be watched.
-    declared = manifest_service(name, backend) is not None
-    trial = (serves_strata(host) or declared) and not serves_tensorfold(name, host, backend)
+    has_service = manifest_service(name, backend) is not None
+    trial = (serves_strata(host) or has_service) and not serves_tensorfold(name, host, backend)
     if trial and backend is not None and (not unchanged or on_host(host, ['systemctl', 'is-active', '--quiet', WATCH]).returncode):
         start_watch(name, host, root, config)  # the trial watch is a claimed-backend thing; Spark keeps its own resource log
-    elif (serves_strata(host) or declared) and (backend is None or not trial):
+    elif (serves_strata(host) or has_service or declared_units(name)) and (backend is None or not trial):
         on_host(host, ['sudo', '-n', 'systemctl', 'stop', WATCH])  # a trial's watch does not outlive its backend
     if unchanged and not on_host(host, ['systemctl', 'is-active', '--quiet', PROXY]).returncode:
         return
@@ -710,7 +719,7 @@ def claim(name, host, switch, idle_minutes, warm_now, backend=None, context=None
     claims.write(ROOT, name, recorded, context, idle_minutes, by)
     own_tensorfold = host.get('spark_tensorfold') and backend == tensorfold_backend(name)
     profile = (json.loads((ROOT / f'backends/{backend}.json').read_text())['id'] if own_tensorfold else
-               backend if serves_strata(host) else host['default_profile'])
+               backend if backend is not None else host['default_profile'])
     print(json.dumps({'claimed': name, 'profile': profile, 'context': context, 'idle_unload_minutes': idle_minutes}))
     if warm_now:
         warm(name, host)
@@ -758,8 +767,7 @@ def main():
     parser.add_argument('--idle', type=float, help='claim: idle minutes before unload (0 = never); default inventory idle_unload_minutes')
     parser.add_argument('--no-warm', action='store_true', help='claim: do not load the model now')
     parser.add_argument('--backend',
-                        choices=sorted(p.stem for p in (ROOT / 'backends').glob('*.json')
-                                       if p.stem != 'schema' and not p.stem.startswith('tf-')),
+                        choices=sorted(stem for stem in backend_names.manifests(ROOT) if not stem.startswith('tf-')),
                         type=lambda name: backend_names.resolve_in(ROOT, name),  # a retired name still answers
                         help='claim: serve this manifest where it can be served - a Strata host\'s trial root, or the '
                              'service its own manifest declares')
