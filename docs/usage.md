@@ -152,6 +152,16 @@ or foreign GPU workload) returns 503 with the reason and never falls back silent
 `release` reports anything left running and lists other users' GPU processes without
 stopping them.
 
+A claimed manifest is served one of two ways. A Strata host serves it from the root its engine
+version has there (`strata_trial_roots` in `infra/inventory.yml`) under
+`<prefix>-strata-inference`. An engine that serves from an image or a container has no such
+root, so its own manifest says how it is served: `workers.<host>.service` names the `unit` this
+project starts and stops (stopping it is what frees the GPU), the internal `port` the front
+reaches, the `root` its launch files live in, and - for a container - the `container` name the
+trial watch reads the engine's processes from. A host that declares neither refuses the claim,
+and a declared service whose unit this site has no text for (`infra/unit.yml`'s `units:` map and
+`infra/templates/<role>.service.j2`) is refused before the host is touched.
+
 After a reboot, `agentiac reclaim` restores the active `local-coder` host without moving
 the route or restarting the gateway. Hosts armed with `auto_reclaim: true` in
 `infra/inventory.yml` are also checked periodically by recovery-only automation (`ops recover

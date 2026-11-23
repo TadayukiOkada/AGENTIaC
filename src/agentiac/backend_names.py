@@ -22,12 +22,18 @@ import yaml
 LEGACY_FILE = 'backends/legacy-names.yml'
 NAME = re.compile(r'[a-z0-9][a-z0-9._-]*')
 # Engine repository -> label; the same labels lead node-first target keys.
-ENGINES = {'TensorFold': 'tf', 'Strata': 'strata'}
+ENGINES = {'TensorFold': 'tf', 'Strata': 'strata',
+           # a fork of an upstream engine built for one machine keeps the upstream name in its manifest (`engine.repository`)
+           # and gets the short label here; the manifest's pinned commit is what says which build it is (docs/lifecycle.md)
+           'Infernix-dgx-spark-gb10': 'infernix'}
 # Model repository -> label, for the exact declared model families only.
 MODELS = {'Qwen3.8-Flash-Next-FP4-Local': 'qfn',
           'Qwen3.8-Flash-Next-GSQ-RCO-GGUF': 'qfn-gsq-rco',
           'Qwen3.8-Flash-Next-GGUF': 'qfn',
-          'DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-GGUF': 'dsv41-coder'}
+          'DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder-GGUF': 'dsv41-coder',
+          # the same model family as the first entry, repacked for one engine: one family label, and the manifest's
+          # own quantization and engine pin are what tell the two artifacts apart
+          'Qwen3.8-Flash-Next-NVIDIA-FP4-Local-Infernix-HC4-W4Dense': 'qfn'}
 # Manifests the rule cannot name yet: they pin an image but no model, engine version or quantization.
 UNNAMED = {'vllm-qwen38-spark': 'an image-only compatibility probe: no model, engine version or quantization is pinned'}
 _QUANT = re.compile(r'(?<![A-Za-z0-9])(?:UD[-_])?(?:IQ|TQ|Q)\d+_[A-Za-z0-9_]+(?![A-Za-z0-9])', re.I)
