@@ -163,7 +163,7 @@ engine's processes from, and the `worker` script - a `*.py` under `scripts/`, in
 it launches with. A host that declares neither refuses the claim, and a declared service whose
 recipe this checkout does not have is refused before the host is touched: the role in
 `infra/unit.yml`'s `units:` map, the text `infra/templates/<role>.service.j2` and the declared
-script, all three named by the refusal. `ops prepare`'s playbook checks the text again on the
+script, all three named by the refusal. `claim`'s unit playbook (`infra/unit.yml`) checks the text again on the
 control side, so a role added without its template does not fail halfway through a claim.
 
 After a reboot, `agentiac reclaim` restores the active `local-coder` host without moving

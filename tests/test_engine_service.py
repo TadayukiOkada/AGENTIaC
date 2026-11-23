@@ -85,6 +85,7 @@ class DeclaredServiceTests(Fixture):
         self.assertIsNone(spec['status_path'])
         self.assertIsNone(spec['start_timeout_s'])
         self.assertIsNone(spec['container'])
+        self.assertIsNone(spec['worker'])
 
     def test_a_unit_this_site_could_not_install_is_refused_by_name(self):
         # Every deployed name is <resource_prefix>-<role> (D6.8); a unit the front stops must be one of ours.
@@ -109,7 +110,8 @@ class DeclaredServiceTests(Fixture):
                 self.borrow.service_spec({'workers': {'workere': {'service': bad}}}, 'workere')
         for field, value in (('unit', f'{self.prefix}-'), ('root', '/'), ('root', '/srv/../etc'),
                              ('root', '/srv/bad;rm'), ('container', 'bad name'), ('worker', 'infernix worker.py'),
-                             ('worker', 'not_a_python_file'), ('worker', '../elsewhere.py'), ('worker', 3)):
+                             ('worker', 'not_a_python_file'), ('worker', '../elsewhere.py'), ('worker', 'a..b.py'),
+                             ('worker', 3)):
             with self.subTest(field=field, value=value), self.assertRaises(SystemExit) as caught:
                 self.borrow.service_spec({'workers': {'workere': {'service': self.service(**{field: value})}}},
                                          'workere')
@@ -239,6 +241,8 @@ class PrepareUnitTests(Fixture):
         self.assertIn(f'cannot install `{self.prefix}-infernix-inference`', message)
         self.assertIn('infra/templates/infernix-inference.service.j2', message)
         self.assertIn('scripts/<worker>.py', message)
+        self.assertIn('run: false', message)
+        self.assertNotIn('run: true', message)
         self.assertEqual(touched, [])
 
     def test_a_role_with_text_but_no_worker_to_install_is_refused_before_the_host_is_asked(self):
@@ -249,6 +253,7 @@ class PrepareUnitTests(Fixture):
         message, touched = self.refused(name)
         self.assertIn('service.worker', message)
         self.assertIn('scripts/<worker>.py', message)
+        self.assertNotIn('has no role', message)
         self.assertEqual(touched, [])
 
     def test_a_declared_worker_that_the_code_does_not_have_is_refused_by_name(self):
@@ -256,6 +261,8 @@ class PrepareUnitTests(Fixture):
         self.recipe(worker=False)
         message, touched = self.refused(name)
         self.assertIn('scripts/infernix-worker.py', message)
+        self.assertIn('does not exist', message)
+        self.assertNotIn('has no role', message)
         self.assertEqual(touched, [])
 
     def test_the_map_is_not_the_text_a_role_in_it_without_a_template_is_refused(self):

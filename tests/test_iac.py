@@ -145,7 +145,7 @@ class CrossFileTests(unittest.TestCase):
                 self.assertTrue(host.get('spark_tensorfold'), name)
 
     def test_every_unit_role_has_the_template_unit_yaml_installs(self):
-        """`ops prepare` installs `infra/templates/<role>.service.j2` for a role in `infra/unit.yml`'s map.
+        """`claim` (`infra/unit.yml`) installs `infra/templates/<role>.service.j2` for a role in the map.
 
         The map is the list of roles a manifest may declare a service for; the template is what actually gets written
         to `/etc/systemd/system/`. A role added without its text fails inside the playbook, on the worker, after the

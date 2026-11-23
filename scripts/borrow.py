@@ -156,7 +156,7 @@ def service_spec(manifest, name):
     if start_timeout_s is not None and (not isinstance(start_timeout_s, int) or isinstance(start_timeout_s, bool)
                                         or start_timeout_s < 1):
         problems.append(('start_timeout_s', 'when declared, is how long the front waits for this engine to be ready'))
-    if worker is not None and (not isinstance(worker, str)
+    if worker is not None and (not isinstance(worker, str) or '..' in worker
                                or not re.fullmatch(r'[a-z0-9][a-z0-9._-]*\.py', worker)):
         problems.append(('worker', 'when declared, must be a `*.py` under `scripts/`: the script this service runs on '
                                    'the host, which is where an engine\'s own launch belongs'))
@@ -458,10 +458,10 @@ def missing_unit(role, worker=None):
                    ['a claimed engine is served by a unit this project installs and stops, because stopping it is what '
                     'releases the GPU (docs/operations.md)',
                     'the role name is the unit name without the site\'s resource prefix',
-                    'the unit text runs `<root>/worker.py`; `ops prepare` installs that script from '
+                    'the unit text runs `<root>/worker.py`; `claim` installs that script from '
                     f'`scripts/{worker or "<worker>.py"}`, the name the manifest declares as `service.worker`'],
                    'grep -n -A 6 "units:" infra/unit.yml; ls infra/templates scripts',
-                   f'add `{role}: {{file: \'{{{{ resource_prefix }}}}-{role}.service\', run: true}}` to that map, write '
+                   f'add `{role}: {{file: \'{{{{ resource_prefix }}}}-{role}.service\', run: false}}` to that map, write '
                    f'`infra/templates/{role}.service.j2`, and put the launch script at '
                    f'`scripts/{worker or "<worker>.py"}`, then repeat the claim')
 
@@ -485,14 +485,28 @@ def prepare_backend(name, host, config, backend=None):
         role = service['unit'].removeprefix(f'{PREFIX}-')
         if role not in installed_unit_roles():
             raise SystemExit(missing_unit(role, service['worker']))
-        if not (CODE / 'infra' / 'templates' / f'{role}.service.j2').exists():
+        if not (CODE / 'infra' / 'templates' / f'{role}.service.j2').is_file():
             # Being in the map is not having the text: unit.yml would fail mid-playbook on the host otherwise.
             raise SystemExit(explain(f'`infra/unit.yml` has the role `{role}` but no `infra/templates/{role}.service.j2`',
                                      ['the map names the unit and the template is its text; both live in `core/`'],
                                      'ls infra/templates/', 'write the template, then repeat the claim'))
-        worker_src = CODE / 'scripts' / service['worker'] if service['worker'] else None
-        if worker_src is None or not worker_src.exists():
-            raise SystemExit(missing_unit(role, service['worker']))
+        if not service['worker']:
+            raise SystemExit(explain(
+                f'this site cannot install `{PREFIX}-{role}`: `workers.{name}.service.worker` is not declared',
+                ['the unit text runs `<root>/worker.py`; `claim` installs it from `scripts/<worker>.py`',
+                 'declaring `service.worker` in the manifest says which script belongs to this engine'],
+                f'grep -n -A 12 "workers" backends/{backend}.json; ls scripts',
+                f'declare `service.worker: "<worker>.py"` in `backends/{backend}.json` and put that script at '
+                '`scripts/<worker>.py`, then repeat the claim'))
+        worker_src = CODE / 'scripts' / service['worker']
+        if not worker_src.is_file():
+            raise SystemExit(explain(
+                f'this site cannot install `{PREFIX}-{role}`: `scripts/{service["worker"]}` does not exist',
+                [f'backends/{backend}.json declares `service.worker: {service["worker"]}` for `{name}`, and `claim` '
+                 'installs that file as `<root>/worker.py`'],
+                'ls scripts',
+                f'put the launch script at `scripts/{service["worker"]}` (or fix `service.worker` in '
+                f'`backends/{backend}.json`), then repeat the claim'))
         root = service['root']
         made = on_host(host, [f'umask 077 && mkdir -p {root}/watch'])
         key = api_key(name, host)
