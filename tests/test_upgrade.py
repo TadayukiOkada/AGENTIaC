@@ -43,6 +43,86 @@ def manifest(id, version, files, hosts, context=262144, extra=None):
     return spec
 
 
+# The other shape a backend manifest takes: Spark's TensorFold, and every engine that serves from an image or a
+# container. No source_version, no ggml_revision, no flat `files`; the weights sit under `model.files`, and some of
+# them name a size and no hash (backends/tf-1.1.4-qfn-mxfp8-nvfp4.json pins 32 files that way, 9 of them size-only).
+NESTED = {
+    'id': 'infernix-1.0-qfn-fp4-local', 'family': 'qfn', 'context': 262144,
+    'recipe': {'repository': 'https://example.invalid/recipe.git', 'revision': 'a' * 40},
+    'engine': {'repository': 'https://example.invalid/engine.git', 'revision': 'b' * 40, 'version': '1.0.0'},
+    'image': {'tag': 'agent-infra-infernix:1.0.0-bbbb', 'id': 'sha256:' + 'c' * 64},
+    'model': {'repository': 'someone/Qwen3.8-Flash-Next-FP4-Local', 'revision': 'd' * 40, 'directory': 'evaluations/fp4',
+              'files': [{'path': 'shard-00001.safetensors', 'size': 40_000_000_000, 'sha256': 'e' * 64},
+                        {'path': 'shard-00002.safetensors', 'size': 30_000_000_000},
+                        {'path': 'config.json', 'size': 75217}]},
+    'workers': {'workere': {'cuda_arch': '121'}},
+}
+
+
+class WeightEntriesTests(unittest.TestCase):
+    """The manifest reads that decide whether a root holds its weights must see both manifest shapes."""
+
+    def test_a_flat_manifest_and_a_nested_one_pin_weights_in_different_places(self):
+        flat = manifest('strata-0.2.12-qfn-gsq-rco-iq3_xxs', '0.2.12', IQ3, ['workera'])
+        self.assertEqual([entry['path'] for entry in upgrade.weight_entries(flat)],
+                         ['qwen3.8-flash-next-iq3_xxs-00001-of-00002.gguf',
+                          'qwen3.8-flash-next-iq3_xxs-00002-of-00002.gguf'])
+        self.assertEqual([entry['path'] for entry in upgrade.weight_entries(NESTED)],
+                         ['shard-00001.safetensors', 'shard-00002.safetensors', 'config.json'])
+        self.assertEqual(upgrade.weight_bytes(NESTED), 70_000_075_217)
+
+    def test_a_nested_manifest_is_not_read_as_pinning_nothing(self):
+        # the reading this exists for: `ops upgrade reuse` answered 0.0 GiB for a manifest that pins 102 GB, and F6
+        # had nothing to check because the flat key was empty
+        self.assertEqual(len(upgrade.pinned(NESTED)), 3)
+        self.assertEqual(upgrade.pinned(NESTED)['shard-00002.safetensors'], (30_000_000_000, None))
+        self.assertEqual(upgrade.asks(NESTED)['shard-00001.safetensors'], (40_000_000_000, 'e' * 64))
+
+    def test_a_size_without_a_hash_is_recorded_as_unknown_not_as_a_pin_or_a_refusal(self):
+        self.assertEqual(upgrade.unhashed_weights(NESTED), ['shard-00002.safetensors', 'config.json'])
+        self.assertEqual(upgrade.unhashed_weights(manifest('x', '1', IQ3, ['workera'])), [])
+        # one side hash-pinned and the other not is a mismatch: only the hash proves the bytes are the same file
+        source = {'files': [{'path': 'a', 'size': 10, 'sha256': 'e' * 64}]}
+        target = {'model': {'files': [{'path': 'a', 'size': 10}]}}
+        self.assertEqual(upgrade.supplies(source, target), ([], ['a']))
+        # both sides size-only is also a mismatch: equal size without a hash never proves identical bytes
+        unhashed_source = {'files': [{'path': 'a', 'size': 10}]}
+        unhashed_empty = {'model': {'files': [{'path': 'a', 'size': 10, 'sha256': ''}]}}
+        self.assertEqual(upgrade.supplies(unhashed_source, target), ([], ['a']))
+        self.assertEqual(upgrade.supplies(unhashed_empty, target), ([], ['a']))
+
+    def test_an_entry_that_is_not_a_pin_is_dropped_rather_than_crashing_the_read(self):
+        manifest_ = {'files': [{'path': 'no-size'}, {'size': 1}, {'path': 'bad-size', 'size': '10'},
+                               {'path': 'bool-size', 'size': True}, {'path': 'neg-size', 'size': -1},
+                               {'path': 'ok', 'size': 1}, 'not-a-dict']}
+        self.assertEqual([entry['path'] for entry in upgrade.weight_entries(manifest_)], ['ok'])
+        # a Strata manifest carries `model` as a repository string; empty `files` must not call `.get` on it
+        self.assertEqual(upgrade.weight_entries({'model': 'Qwen/Qwen3.8-Flash-Coder', 'files': []}), [])
+
+    def test_the_measured_half_of_f6_asks_about_the_nested_entries_too(self):
+        from agentiac import retire
+        present = {'shard-00001.safetensors': True, 'shard-00002.safetensors': False, 'config.json': True}
+        missing = retire.weights_missing(NESTED, present)
+        self.assertEqual([entry['path'] for entry in missing], ['shard-00002.safetensors'])
+
+
+class ManifestShapeTests(unittest.TestCase):
+    def test_the_upgrade_reading_is_for_a_strata_shaped_manifest_and_says_so_for_the_other(self):
+        flat = manifest('strata-0.2.12-qfn-gsq-rco-iq3_xxs', '0.2.12', IQ3, ['workera'])
+        self.assertTrue(upgrade.strata_shaped(flat))
+        self.assertFalse(upgrade.strata_shaped(NESTED))
+        text = upgrade.not_strata_shaped('workere', 'infernix-1.0-qfn-fp4-local', NESTED)
+        self.assertIn('backends/infernix-1.0-qfn-fp4-local.json is not the kind of manifest', text)
+        self.assertIn('strata_trial_roots', text)
+        self.assertIn('recipe, engine, image, model', text)
+        self.assertIn('ops prepare workere --check', text)
+
+    def test_a_manifest_of_neither_shape_still_names_what_it_declares(self):
+        text = upgrade.not_strata_shaped('workere', 'odd-1', {'id': 'odd-1'})
+        self.assertIn('none of recipe/engine/image/model either', text)
+        self.assertNotIn('which is the shape of an engine', text)
+
+
 def write_synthetic_site(root):
     for rel in ('infra', 'profiles', 'backends', 'gateway', 'agents/pi', 'artifacts/lifecycle'):
         (root / rel).mkdir(parents=True, exist_ok=True)
@@ -496,6 +576,49 @@ class CommandTests(SyntheticSiteTestCase):
         result = self.upgrade_cli('plan', 'workerb', '--backend', 'no-such-backend')
         self.assertEqual(result.returncode, 2)
         self.assertIn('no backend manifest names no-such-backend', result.stderr)
+
+    def test_plan_and_reuse_refuse_a_nested_manifest_instead_of_answering_zero(self):
+        # what this replaces: `plan` died in its formatter with a None engine revision, and `reuse` reported
+        # "download 0.0 GiB" for a manifest pinning 70 GB in three files
+        (self.root / 'backends/infernix-1.0-qfn-fp4-local.json').write_text(json.dumps(NESTED, indent=2))
+        for action in ('plan', 'reuse'):
+            result = self.upgrade_cli(action, 'workere', '--backend', 'infernix-1.0-qfn-fp4-local')
+            self.assertEqual(result.returncode, 1, f'{action}: {result.stderr}')
+            self.assertIn('is not the kind of manifest', result.stderr)
+            self.assertNotIn('0.0 GiB', result.stdout)
+
+    def test_refusal_and_draft_use_canonical_stem_and_zero_file_reuse_is_empty(self):
+        nested_alias = json.loads(json.dumps(NESTED))
+        nested_alias['id'] = 'legacy-infernix-id'
+        (self.root / 'backends/infernix-1.0-qfn-fp4-local.json').write_text(json.dumps(nested_alias, indent=2))
+        result = self.upgrade_cli('plan', 'workere', '--backend', 'legacy-infernix-id')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('backends/infernix-1.0-qfn-fp4-local.json is not the kind of manifest', result.stderr)
+
+        graph = declared.load(self.root)
+        with self.assertRaises(SystemExit) as caught:
+            upgrade.draft_upgrade(graph, 'workere', '1.0.0', base_backend='infernix-1.0-qfn-fp4-local')
+        self.assertIn('is not the kind of manifest', str(caught.exception))
+
+        empty_manifest = manifest('strata-empty-fixture', '0.2.12', [], ['workerb'])
+        self.assertEqual(upgrade.reuse_candidates(graph, 'workerb', empty_manifest)['candidates'], [])
+
+    def test_weight_guard_skips_tensorfold_and_nested_manifests_on_a_host_with_strata_trial_roots(self):
+        from agentiac import paths
+        with mock.patch.dict(os.environ, {'AGENTIAC_ROOT': str(self.root)}):
+            import borrow
+        tf_manifest = json.loads(json.dumps(NESTED))
+        tf_manifest['id'] = 'spark-tensorfold-v114'
+        tf_manifest['engine'] = {'repository': 'https://github.com/example/TensorFold.git', 'version': '1.1.4'}
+        (self.root / 'backends/tf-1.1.4-qfn-mxfp8-nvfp4.json').write_text(json.dumps(tf_manifest, indent=2))
+        (self.root / 'backends/infernix-1.0-qfn-fp4-local.json').write_text(json.dumps(NESTED, indent=2))
+        host = {'spark_tensorfold': True, 'strata_trial_roots': {'0.2.13': '/srv/agentiac/strata-0.2.13'}}
+        with mock.patch.object(borrow, 'ROOT', self.root), \
+             mock.patch.object(borrow, 'on_host') as on_host, \
+             mock.patch.object(borrow, 'strata_root', side_effect=AssertionError('strata_root must not be called')):
+            borrow.weight_guard('workere', host, 'tf-1.1.4-qfn-mxfp8-nvfp4')
+            borrow.weight_guard('workere', host, 'infernix-1.0-qfn-fp4-local')
+        on_host.assert_not_called()
 
     def test_reuse_json_names_the_root_and_the_cost_of_not_using_it(self):
         result = self.upgrade_cli('reuse', 'workera', '--backend', 'strata-0.2.12-qfn-gsq-rco-iq3_xxs', '--json')
