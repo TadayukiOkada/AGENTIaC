@@ -120,6 +120,13 @@ def main():
     except SystemExit as missing:
         print(missing, file=sys.stderr)
         return UNDECLARED
+    if not upgrade.strata_shaped(manifest):
+        # Both readings below are the Strata preparation: a trial root, a drafter pack, a pin moved to a manifest lock.
+        # Answering them for an image-or-container manifest is worse than refusing: `reuse` prints "0.0 GiB" for the
+        # 32 files and 102,262,310,123 bytes a nested manifest pins, and `plan` reaches its formatter with a None
+        # engine revision and dies in a traceback.
+        print(upgrade.not_strata_shaped(args.host, args.backend, manifest), file=sys.stderr)
+        return BLOCKED
     if args.action == 'reuse':
         found = upgrade.reuse_candidates(graph, args.host, manifest)
         if args.json:

@@ -54,7 +54,7 @@ manifest and no inventory key, and that line is what authorises `--purge`.
 """
 import datetime
 
-from agentiac import retention
+from agentiac import retention, upgrade
 from agentiac.errors import command as cli_name
 
 FLOOR_GIB = 40                      # the owner's floor, the same number prepare holds (S §2.2)
@@ -225,8 +225,13 @@ def thin_ledger(ledger, host, handle_):
 
 def weights_missing(manifest, present):
     """The measured half of F6: the manifest's weight entries the host says are not there — missing, or not the
-    size the manifest pins. PRESENT is what the host answered, keyed by the manifest's own relative path."""
-    return [entry for entry in (manifest.get('files') or []) if not present.get(entry['path'], True)]
+    size the manifest pins. PRESENT is what the host answered, keyed by the manifest's own relative path.
+
+    `upgrade.weight_entries` rather than `manifest['files']`: a manifest in the nested shape pins its weights under
+    `model.files`, and a guard that reads only the flat key reports "nothing missing" about a checkpoint the manifest
+    names in 32 files.
+    """
+    return [entry for entry in upgrade.weight_entries(manifest) if not present.get(entry['path'], True)]
 
 
 def serving(check_id, target, refs, measured):

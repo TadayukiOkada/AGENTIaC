@@ -49,9 +49,35 @@ MEASURE = ('claim with no --route, then the ladder and the Suite on the alias of
            f'{cli_name()} warm HOST, {cli_name()} ops drift (front identity), {cli_name()} doctor')
 
 
+def weight_entries(manifest):
+    """The weight files a manifest pins, wherever that manifest keeps them.
+
+    A Strata manifest lists them flat (`files`). Spark's TensorFold manifest - and every engine manifest written in
+    the nested `recipe`/`engine`/`image`/`model` shape since - carries them under `model.files`. Reading only the flat
+    key is not a harmless omission: `backends/tf-1.1.4-qfn-mxfp8-nvfp4.json` pins 32 files totalling
+    102,262,310,123 bytes, and every weight read that asks the manifest answered "no file, no bytes" about a
+    95 GiB checkpoint the host actually holds. F6 ("a root without its weights does not start") and
+    `ops upgrade reuse`'s byte count both read through here, so they say the same thing about a nested manifest as
+    about a flat one.
+
+    Not every nested entry is hash-pinned: 9 of those 32 name a size and no `sha256`. The hash stays optional here -
+    a size is still a pin, and a missing hash is an unknown to report rather than a refusal. Where two manifests are
+    compared (`supplies`), one side pinned by size alone and the other by size plus hash read as a mismatch: only the
+    hash-bearing side can prove the bytes are the same file, and pretending otherwise would let a reuse copy past a
+    check it never passed.
+    """
+    entries = manifest.get('files') or (manifest.get('model') or {}).get('files') or []
+    return [entry for entry in entries if isinstance(entry, dict) and entry.get('path') and entry.get('size') is not None]
+
+
+def unhashed_weights(manifest):
+    """The pinned weight entries that name a size and no SHA-256: what a size-only pin cannot prove."""
+    return [entry['path'] for entry in weight_entries(manifest) if not entry.get('sha256')]
+
+
 def pinned(manifest):
     """What a manifest says a prepared root holds: {path: (bytes, sha256)} — where the worker writes the weight."""
-    return {entry['path']: (int(entry['size']), entry['sha256']) for entry in manifest.get('files', [])}
+    return {entry['path']: (int(entry['size']), entry.get('sha256')) for entry in weight_entries(manifest)}
 
 
 def asks(manifest):
@@ -62,8 +88,8 @@ def asks(manifest):
     quantization filed under another name); only the bytes have to agree, which is why the comparison below is a
     coverage check rather than an equality of sets. The declared manifests use the same name on both sides.
     """
-    return {entry.get('same_as') or entry['path']: (int(entry['size']), entry['sha256'])
-            for entry in manifest.get('files', [])}
+    return {entry.get('same_as') or entry['path']: (int(entry['size']), entry.get('sha256'))
+            for entry in weight_entries(manifest)}
 
 
 def weight_bytes(manifest):
@@ -76,6 +102,35 @@ def supplies(source, target):
     missing = sorted(name for name in asks(target) if name not in held)
     mismatched = sorted(name for name, want in asks(target).items() if name in held and held[name] != want)
     return missing, mismatched
+
+
+def strata_shaped(manifest):
+    """Whether this is the manifest shape `ops upgrade plan` and `ops upgrade reuse` read.
+
+    Those two commands take the engine from `source_version`/`source_revision`/`ggml_revision` and the root from
+    `infra/inventory.yml <host> strata_trial_roots`, and their steps are the Strata preparation: a root on the host,
+    a drafter pack, a `components.yml` pin moved to a manifest lock. A manifest in the nested
+    `recipe`/`engine`/`image`/`model` shape has none of those keys: it prepares an image or a container, not a root.
+    Saying which shape a manifest is lets those commands refuse in words instead of printing `0.0 GiB` for a 95 GiB
+    checkpoint (reuse) or dying in the formatter (plan).
+    """
+    return bool(manifest.get('source_version') or manifest.get('source_revision') or manifest.get('files'))
+
+
+def not_strata_shaped(host, backend_id, manifest):
+    """The refusal `ops upgrade plan|reuse` gives a manifest it does not read, with what does read it."""
+    blocks = [key for key in ('recipe', 'engine', 'image', 'model') if manifest.get(key)]
+    declared_blocks = ', '.join(blocks) if blocks else 'none of recipe/engine/image/model either'
+    return explain(
+        f'backends/{backend_id}.json is not the kind of manifest {cli_name()} ops upgrade plan|reuse reads',
+        ['those commands read the engine from `source_version`, `source_revision` and `ggml_revision` and the root '
+         f'from infra/inventory.yml {host} `strata_trial_roots`; this manifest declares none of them',
+         f'it declares {declared_blocks}, which is the shape of an engine that serves from an image or a container '
+         f'rather than from a prepared root'],
+        f'{cli_name()} model show <target> for what is declared, {cli_name()} ops storage {host}, '
+        f'{cli_name()} ops prepare {host} --check, {cli_name()} ops drift',
+        f'a plan/reuse reading of an image-or-container engine is its own design: name it before bending these '
+        f'commands to a manifest they were not written for')
 
 
 def manifest_for(graph, backend_id):
@@ -222,6 +277,11 @@ def prepare_gate(graph, host, backend_id, reuse_root=None, reuse_declared=False,
     """
     manifest = manifest_for(graph, backend_id)
     if not manifest.get('files'):
+        # Deliberately the flat key, not `weight_entries`: this gate decides the *Strata trial-root* preparation, and
+        # a manifest in the nested shape has no trial root to prepare - its weights arrive with an image or a
+        # container through its own prepare path (`infra/tasks/prepare-tensorfold.yml` today). Making it ask
+        # `strata_trial_roots` about an image engine would be the wrong refusal; the right reading of such a manifest
+        # is the multi-engine dispatch that does not exist yet.
         return manifest, None, None, ('skip', None)   # a manifest that pins no weights has nothing to decide
     if host not in (manifest.get('workers') or {}):
         raise SystemExit(f'backends/{backend_id}.json does not name {host} in `workers`: the preparation of a '
@@ -349,6 +409,8 @@ def measure_alias(graph, host, backend_id):
 def plan(graph, host, backend_id):
     """The ordered reading of an upgrade on HOST: declared facts, blockers, and the steps with their commands."""
     manifest = manifest_for(graph, backend_id)
+    if not strata_shaped(manifest):
+        raise SystemExit(not_strata_shaped(host, backend_id, manifest))
     key, root = trial_root(graph, host, manifest)
     current_backend = graph.nodes.get(host, {}).get('strata_backend')
     component = pinned_by(graph, host)

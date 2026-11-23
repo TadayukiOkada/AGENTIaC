@@ -45,7 +45,7 @@ from agentiac import paths  # noqa: E402
 ROOT = paths.root()
 sys.path.insert(0, str(CODE / 'scripts'))
 from agentiac.errors import explain  # noqa: E402
-from agentiac import backend_names, claims, declared, mutation, retire  # noqa: E402
+from agentiac import backend_names, claims, declared, mutation, retire, upgrade  # noqa: E402
 import route  # noqa: E402
 from agentiac.errors import command as cli_name  # noqa: E402
 
@@ -496,7 +496,7 @@ def weight_guard(name, host, backend):
     if refusal:
         raise SystemExit(refusal)
     manifest = json.loads((ROOT / f'backends/{backend}.json').read_text())
-    pinned = manifest.get('files') or []
+    pinned = upgrade.weight_entries(manifest)  # flat `files` or nested `model.files`: the same manifest, two shapes
     if not pinned:
         return
     root = strata_root(host, backend)
