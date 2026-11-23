@@ -211,6 +211,15 @@ agentiac ops prepare <host> --backend <id> [--reuse-root PATH | --reuse-declared
 sources, and copies reused weights onto independent inodes (`nlink == 1`, verified by
 SHA256; [ADR 0008](adr/0008-two-generation-retention.md)).
 
+Where a manifest's weights are is the manifest's answer, and one reading of it is used everywhere:
+a flat `files` manifest is served from the trial root `infra/inventory.yml` declares and holds them
+under `<root>/data/models`, and a manifest that carries its model as `model.directory` is measured
+under that host's `project_root` - which is what `ops storage` lists as a held weight directory and
+what a claim's F6 guard refuses to start without. A manifest that declares its `service` also adds
+its own root to what `ops storage` measures and what `infra/retention.yml` can hold. `ops storage`
+asks each host for the images this site's `resource_prefix` names plus the NGC PyTorch base images
+its recipes pin; an upstream image a manifest pins is not ours to name.
+
 Root retirement and thinning follow a two-stage, reference-gated flow:
 
 ```sh

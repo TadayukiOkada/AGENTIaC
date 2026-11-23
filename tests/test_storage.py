@@ -1,6 +1,7 @@
 """`ops storage`: what each node declares, what one more update needs, and what nobody names."""
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -295,6 +296,72 @@ class TensorfoldStorageTests(unittest.TestCase):
         for text, expected in [('24.5GB', 24500000000), ('2GB', 2000000000), ('16.9GB', 16900000000),
                                ('512MB', 512000000), ('3GiB', 3 * 1024**3), ('', 0), ('n/a', 0)]:
             self.assertEqual(storage.human_bytes(text), expected)
+
+
+class DeclaredServiceTests(unittest.TestCase):
+    """An engine that declares its `service` has a root and a weight directory this site has to see (PA §11, §3.4)."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.fixture = Path(directory.name)
+        (self.fixture / 'backends').mkdir()
+        (self.fixture / 'backends/infernix-fixture.json').write_text(json.dumps({
+            'id': 'infernix-fixture',
+            'engine': {'repository': 'https://example.invalid/Infernix-dgx-spark-gb10.git', 'version': '1.0.0'},
+            'model': {'repository': 'example/Model', 'directory': 'evaluations/infernix/hc4-w4dense',
+                      'files': [{'path': 'model-00001-of-00003.safetensors', 'size': 7}]},
+            'workers': {'workere': {'service': {'unit': 'agentiac-infernix-inference', 'port': 18090,
+                                                'root': '/srv/agentiac/evaluations/infernix/service'}}}}))
+        previous = storage.ROOT
+        storage.ROOT = self.fixture
+        self.addCleanup(setattr, storage, 'ROOT', previous)
+
+    def test_the_root_the_engine_declares_is_measured_as_ours(self):
+        paths, parents = storage.declared_roots('workere', {'project_root': '/srv/agentiac'})
+        self.assertIn('/srv/agentiac/evaluations/infernix/service', paths)
+        self.assertEqual(parents, [])  # its parent is the owner's evaluation tree, so the scan does not claim it
+
+    def test_the_weight_directory_outside_the_root_is_listed_as_held_not_leftover(self):
+        self.assertEqual(storage.loose_weights('workere', {'project_root': '/srv/agentiac'}),
+                         ['/srv/agentiac/evaluations/infernix/hc4-w4dense'])
+
+    def test_a_host_the_manifest_does_not_name_is_told_nothing_about_this_engine(self):
+        self.assertEqual(storage.declared_roots('workerz', {'project_root': '/srv/agentiac'}), ([], []))
+        self.assertEqual(storage.loose_weights('workerz', {'project_root': '/srv/agentiac'}), [])
+
+
+class ImageFilterTests(unittest.TestCase):
+    """Which `docker images` rows are ours: this site's own prefix, not the core's default one (D6.8)."""
+
+    def test_the_prefix_this_site_deploys_is_the_prefix_the_reading_asks_for(self):
+        prefix = declared.setting('resource_prefix', SITE)
+        pattern = storage.image_pattern()
+        self.assertIn(re.escape(prefix), pattern)
+        self.assertTrue(re.search(pattern, f'{prefix}-infernix:1.0.0-dev'))
+        self.assertTrue(re.search(pattern, 'nvcr.io/nvidia/pytorch:26.07-py3'))
+        self.assertIsNone(re.search(pattern, 'ubuntu:24.04'))
+
+    def test_an_image_this_site_built_is_asked_of_the_host_and_an_upstream_one_is_not(self):
+        """The rule, applied to the manifests as they are: `<resource_prefix>-...` is ours, anything else a manifest
+        pins (an upstream image it builds from or probes against) is not ours to name (§11)."""
+        prefix = declared.setting('resource_prefix', SITE)
+        pattern = storage.image_pattern()
+        tags = []
+        for path in sorted((SITE / 'backends').glob('*.json')):
+            manifest = json.loads(path.read_text())
+            if not isinstance(manifest, dict):
+                continue
+            image = manifest.get('image')
+            tag = image.get('tag') if isinstance(image, dict) else image
+            if isinstance(tag, str):
+                tags.append(tag)
+        for tag in tags + [f'{prefix}-infernix:1.0.0-dev', 'docker.io/vllm/vllm-openai@sha256:' + '0' * 64]:
+            with self.subTest(tag=tag):
+                if tag.startswith(prefix + '-'):
+                    self.assertIsNotNone(re.search(pattern, tag))
+                else:
+                    self.assertIsNone(re.search(pattern, tag))
 
 
 if __name__ == '__main__':

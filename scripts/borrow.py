@@ -46,7 +46,7 @@ from agentiac import paths  # noqa: E402
 ROOT = paths.root()
 sys.path.insert(0, str(CODE / 'scripts'))
 from agentiac.errors import explain  # noqa: E402
-from agentiac import backend_names, claims, declared, mutation, retire, upgrade  # noqa: E402
+from agentiac import backend_names, claims, declared, identities, mutation, retire, upgrade  # noqa: E402
 import route  # noqa: E402
 from agentiac.errors import command as cli_name  # noqa: E402
 
@@ -658,24 +658,54 @@ def weight_guard(name, host, backend):
     because a ledger line is a declaration and a weight can be absent for a reason the ledger does not know about.
     A host that cannot be answered is not a refusal here — `claim` is about to work with it at length, and its own
     connection failure is the clearer message.
+
+    Where it looks is declared, not guessed, because the two manifest shapes put their weights in two places: a
+    manifest that pins them flat (files) is served from a trial root the inventory names and holds them under
+    <root>/data/models; a manifest that declares its service carries its model as files under the model.directory
+    the manifest itself names, relative to the host's project_root - the reading ops storage already uses, so the
+    guard and the storage ledger cannot disagree about where 100 GB is supposed to be.
     """
-    if backend is None or not serves_strata(host) or serves_tensorfold(name, host, backend):
+    if backend is None or serves_tensorfold(name, host, backend):
         return
-    refusal = retire.thin_ledger(declared.load(ROOT).retention, name, backend)
-    if refusal:
-        raise SystemExit(refusal)
+    service = manifest_service(name, backend)
+    if not serves_strata(host) and service is None:
+        return
     manifest = json.loads((ROOT / f'backends/{backend}.json').read_text())
-    if not upgrade.strata_shaped(manifest):
-        # Non-Strata manifests keep weights outside `strata_trial_roots` (e.g., under `model.directory`); checking
-        # them belongs to the multi-engine dispatch, not `strata_root()` + `{root}/data/models/`.
+    if not upgrade.strata_shaped(manifest) and service is None:
+        # The shape Spark's own TensorFold service is written in, on the host that serves it as its backend: its
+        # weights sit in the checkpoint directory that manifest names, and today's claim of that service has never
+        # been checked against them. Making the incumbent's claim start checking 32 pinned files changes a live
+        # host's behaviour, which is a batch of its own with a window of its own, not a side effect of this reading.
         return
     pinned = upgrade.weight_entries(manifest)  # flat `files` or nested `model.files`: the same manifest, two shapes
     if not pinned:
-        return
-    root = strata_root(host, backend)
-    named = {f"{root}/data/models/{entry['path']}": entry['path'] for entry in pinned}
+        return  # a manifest that pins no weight file gives F6 nothing to check
+    refusal = retire.thin_ledger(declared.load(ROOT).retention, name, backend)
+    if refusal:
+        raise SystemExit(refusal)
+    if upgrade.strata_shaped(manifest):
+        if not serves_strata(host):
+            raise SystemExit(f'{backend}: a manifest that pins its weights flat is served from a root '
+                             f'infra/inventory.yml declares (`strata_trial_roots` or `strata_root`); {name} declares '
+                             'none, so there is no root to check and none to serve from')
+        where = strata_root(host, backend) + '/data/models'
+    else:
+        directory = identities.model_directory(manifest)
+        if directory is None:
+            raise SystemExit(explain(
+                f'{backend}: its manifest pins weight files and names no model directory, so this site cannot say '
+                f'where they are on {name}',
+                ['a manifest that declares its service carries its model as files under `model.directory`, relative '
+                 "to the host's `project_root` - what `ops storage` lists as the weight directory it holds",
+                 'a manifest that keeps its weights inside its engine root pins them flat (`files`), which is read '
+                 'from <root>/data/models'],
+                f'grep -n -A 4 "model" backends/{backend}.json',
+                f'declare the directory (or pin flat), then {cli_name()} ops prepare {name} --backend {backend} '
+                '--check'))
+        where = host['project_root'].rstrip('/') + '/' + directory
+    named = {f"{where}/{entry['path']}": entry['path'] for entry in pinned}
     argv = ['bash', '-s', name] + [value for entry in pinned
-                                   for value in (f"{root}/data/models/{entry['path']}", str(entry['size']))]
+                                   for value in (f"{where}/{entry['path']}", str(entry['size']))]
     done = on_host(host, argv, input=WEIGHTS_PRESENT, timeout=60)
     if done.returncode:
         return
@@ -684,7 +714,7 @@ def weight_guard(name, host, backend):
     missing = retire.weights_missing(manifest, {relative: answers.get(path, True) for path, relative in named.items()})
     if missing:
         listed = ', '.join(f"{entry['path']} ({entry['size']} B)" for entry in missing)
-        raise SystemExit(f'{backend}: {len(missing)} pinned weight file(s) are not in {root} as this manifest pins '
+        raise SystemExit(f'{backend}: {len(missing)} pinned weight file(s) are not in {where} as this manifest pins '
                          f'them: {listed}. A root without its weights does not start (F6). Put them back with '
                          f'{cli_name()} ops restore {name} --backend {backend}, or prepare the root again with '
                          f'{cli_name()} ops prepare {name} --backend {backend}')
@@ -708,8 +738,10 @@ def claim(name, host, switch, idle_minutes, warm_now, backend=None, context=None
         # `claim <host>` resolves to the manifest `strata_default_backend` names, at that manifest's own context
         backend = host['strata_default_backend']
         context = context or json.loads((ROOT / f'backends/{backend}.json').read_text())['context']
-    if backend is not None and serves_strata(host) and not serves_tensorfold(name, host, backend):
-        weight_guard(name, host, backend)      # F6: before a front, a tunnel or a load (T5.3)
+    if backend is not None:
+        # F6: before a front, a tunnel or a load (T5.3). Which claims have a declared place on this host to check
+        # - and which shapes are not checked yet - is the guard's own answer, not a condition written here.
+        weight_guard(name, host, backend)
     if switch:
         claimed_target(name, backend, context)  # refuse before anything starts
     enable_ondemand(name, host, idle_minutes, backend, context, engine_options=engine_options)

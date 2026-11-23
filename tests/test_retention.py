@@ -608,5 +608,38 @@ class DisagreementTests(Mutated):
                       declared.references(self.graph()))
 
 
+class DeclaredServiceRootsTests(unittest.TestCase):
+    """A manifest that declares its `service` says which root of that host it is served from, and the ledger has to
+    know that root or it cannot hold the generation (`infra/retention.yml`, plan §2.3)."""
+
+    MANIFEST = {'id': 'infernix-fixture',
+                'engine': {'repository': 'https://example.invalid/Infernix-dgx-spark-gb10.git', 'version': '1.0.0'},
+                'workers': {'workere': {'service': {'unit': 'agentiac-infernix-inference', 'port': 18090,
+                                                     'root': '/srv/agentiac/evaluations/infernix/service'}}}}
+    FACTS = {'project_root': '/srv/agentiac', 'strata_trial_roots': {'0.2.8': '/mnt/data/agentiac-strata-0.2.8'}}
+
+    def test_a_host_with_no_trial_root_still_has_the_root_its_manifest_declares(self):
+        self.assertEqual(retention.host_roots({'project_root': '/srv/agentiac'}, 'workere', [self.MANIFEST]),
+                         ['/srv/agentiac/evaluations/infernix/service'])
+
+    def test_an_inventory_root_and_a_declared_root_are_both_roots_of_that_host(self):
+        self.assertEqual(retention.host_roots(self.FACTS, 'workere', [self.MANIFEST]),
+                         ['/mnt/data/agentiac-strata-0.2.8', '/srv/agentiac/evaluations/infernix/service'])
+
+    def test_a_manifest_that_declares_nothing_leaves_the_inventory_answering_as_before(self):
+        self.assertEqual(retention.host_roots(self.FACTS), ['/mnt/data/agentiac-strata-0.2.8'])
+        self.assertEqual(retention.host_roots(self.FACTS, 'workere', [{'workers': {'workere': {}}}]),
+                         ['/mnt/data/agentiac-strata-0.2.8'])
+
+    def test_the_manifest_is_asked_first_because_it_is_the_more_specific_declaration(self):
+        self.assertEqual(retention.inventory_root(self.FACTS, 'infernix-fixture', self.MANIFEST, 'workere'),
+                         '/srv/agentiac/evaluations/infernix/service')
+
+    def test_a_manifest_with_no_service_is_resolved_by_the_inventory_rule(self):
+        flat = {'id': 'strata-fixture', 'source_version': '0.2.8', 'workers': {'workere': {'cuda_arch': '121'}}}
+        self.assertEqual(retention.inventory_root(self.FACTS, 'strata-fixture', flat, 'workere'),
+                         '/mnt/data/agentiac-strata-0.2.8')
+
+
 if __name__ == '__main__':
     unittest.main()

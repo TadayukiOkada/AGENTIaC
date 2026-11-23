@@ -13,7 +13,7 @@ tests rather than by a promise every caller remembers to make.
 import json
 from pathlib import Path
 
-from agentiac import paths
+from agentiac import identities, paths
 
 ROOT = paths.root()
 CODE = paths.CODE
@@ -34,16 +34,33 @@ def shape(ledger):
             for error in sorted(validator.iter_errors(ledger), key=lambda e: list(map(str, e.absolute_path)))]
 
 
-def host_roots(facts):
-    """The engine roots `infra/inventory.yml` declares for one node (the map `scripts/borrow.py` serves from)."""
+def host_roots(facts, host_name=None, manifests=()):
+    """The engine roots declared for one node: the inventory's (`strata_trial_roots`, `strata_root`) and, with
+    HOST_NAME and MANIFESTS given, the roots those manifests declare for it (`workers.<host>.service.root`).
+
+    The second half is what an engine that serves from a container has: no trial root and no host-wide flag, only
+    its own declaration. A ledger that cannot name it would report the directory that engine prepares into as a
+    root this host holds nothing in - and `ops retire` would be unable to name the generation at all.
+    """
     roots = list((facts.get('strata_trial_roots') or {}).values())
     if facts.get('strata_root'):
         roots.append(facts['strata_root'])
+    if host_name:
+        roots += [root for root in (identities.service_root(manifest, host_name) for manifest in manifests) if root]
     return sorted(set(roots))
 
 
-def inventory_root(facts, stem, manifest):
-    """The root the inventory declares for one backend on one node: manifest ID first, then engine version."""
+def inventory_root(facts, stem, manifest, host_name=None):
+    """The root one backend is served from on one node: what the manifest declares first, then the inventory.
+
+    A manifest that declares its `service` says where that engine is served, which is more specific than any
+    host-wide root map; a manifest that does not is served from the root `infra/inventory.yml` declares for it,
+    by manifest ID then engine version.
+    """
+    if host_name:
+        declared_root = identities.service_root(manifest, host_name) if manifest else None
+        if declared_root:
+            return declared_root
     roots = facts.get('strata_trial_roots') or {}
     if stem in roots:
         return roots[stem]
@@ -74,7 +91,7 @@ def problems(ledger, nodes, backends, route):
 
     for host, block in sorted(ledger.items()):
         facts = nodes[host]
-        roots = host_roots(facts)
+        roots = host_roots(facts, host, list(backends.values()))
         staging = [entry['path'] for entry in block['staging'] if 'path' in entry]
         held, retired, targets = {}, set(), {spec['backend'] for spec in route['targets'].values()
                                              if spec['node'] == host and 'backend' in spec}
@@ -97,15 +114,18 @@ def problems(ledger, nodes, backends, route):
                 if entry.get('retirement') and state == 'serving':
                     found.append(f'{where}: what serves is never a retirement candidate (§4.3)')
                 if manifest is not None:
-                    want = inventory_root(facts, stem, manifest)
+                    want = inventory_root(facts, stem, manifest, host)
+                    who = (f'backends/{stem}.json' if identities.service_root(manifest, host) else 'infra/inventory.yml')
                     if want and not path:
-                        found.append(f'{where}: infra/inventory.yml declares {want} for it and the ledger names no root')
+                        found.append(f'{where}: {who} declares {want} for it and the ledger names no root')
                     elif want and want != path:
-                        found.append(f'{where}: the ledger says {path}, infra/inventory.yml declares {want}')
+                        found.append(f'{where}: the ledger says {path}, {who} declares {want}')
                     elif not want and path and roots:
-                        found.append(f'{where}: {path} is no root infra/inventory.yml declares for {host}')
+                        found.append(f'{where}: {path} is no root infra/inventory.yml or these manifests declare '
+                                     f'for {host}')
                 elif path and state != 'quarantine' and roots and path not in roots:
-                    found.append(f'{where}: {path} is no root infra/inventory.yml declares for {host}')
+                    found.append(f'{where}: {path} is no root infra/inventory.yml or the manifests declare for '
+                                 f'{host}')
                 if path and state == 'quarantine' and not any(path == s or path.startswith(s + '/') for s in staging):
                     found.append(f'{where}: {path} is not under a staging directory this file names for {host} (§5.5)')
 
