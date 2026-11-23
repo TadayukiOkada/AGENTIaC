@@ -28,7 +28,7 @@ CORE_PREFIXES = ('src/', 'scripts/', 'tests/', 'bin/', 'runtime/', 'dashboard/',
 CORE_DOCS = frozenset({
     'README.md', 'architecture.md', 'usage.md', 'operations.md', 'development.md', 'testing.md',
     'troubleshooting.md', 'dashboard.md', 'dashboard-design.md', 'agents.md', 'documentation-guide.md',
-    'model-naming.md', 'manual-ja.md'})
+    'model-naming.md', 'manual-ja.md', 'lifecycle.md'})
 # Class C tests (D6.6): every test module that does not run against examples/site (tests/example-site.txt), and the
 # fixtures and harnesses only they use. They use this site as their fixture, so they stay with it until M10 ports them;
 # tests/test_layout.py keeps this list the exact complement of tests/example-site.txt.

@@ -2,7 +2,8 @@
 
 Status: current frontend contract. `agentiac code` owns interactive pi
 worktrees and sessions; this page owns Suite adapter selection, pin validation and capability reporting.
-See [development](development.md) for control environment setup, test execution and component pin checks.
+See [development](development.md) for control environment setup, test execution and component pin checks, and
+[Lifecycle](lifecycle.md#part-b-coding-agent-frontend-lifecycle) for frontend evaluation and upgrade gates.
 Earlier frontend research and pilots in a site archive retain their original conditions;
 their success is not a current support matrix or a fair frontend speed ranking.
 
