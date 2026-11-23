@@ -34,6 +34,7 @@ class Classification(unittest.TestCase):
                                ('docs/architecture.md', 'core'), ('docs/testing.md', 'core'),
                                ('docs/model-naming.md', 'core'), ('docs/troubleshooting.md', 'core'),
                                ('docs/dashboard.md', 'core'),
+                               ('docs/lifecycle.md', 'core'),
                                ('docs/adr/README.md', 'core'),
                                ('docs/adr/0001-x.md', 'core'), ('docs/adr/0002-x.md', 'core'),
                                ('docs/adr/0003-x.md', 'core'), ('docs/adr/0006-x.md', 'core'),

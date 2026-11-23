@@ -191,6 +191,7 @@ rebuilds `evidence.sqlite`. Then complete the remaining operator steps in order:
 
 ### Strata preparation, upgrades, and two-generation retention
 
+See [Lifecycle](lifecycle.md) for the end-to-end promotion, cutover, thinning, and retirement workflow.
 Strata loads gate on free host RAM (`min_available_gib + 4 GiB` headroom in
 `scripts/strata-start-worker.py`). On unified-memory Jetson nodes, the unit's
 `ExecStopPost=+` and pre-start retry flush idle `nvmap` page pools via
