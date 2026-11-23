@@ -35,7 +35,8 @@ BLOCKED, UNDECLARED = 1, 2
 def show(plan):
     """The reading as lines a person can act on, blockers first."""
     engine = plan['engine']
-    print(f"{plan['backend']} on {plan['host']}: engine {engine['version']} at {engine['revision'][:12]}, "
+    print(f"{plan['backend']} on {plan['host']}: engine {engine['version']} at "
+          f"{engine['revision'][:12] if engine['revision'] else 'unknown'}, "
           f"ggml {engine['ggml_revision'][:12] if engine['ggml_revision'] else 'unknown'}, "
           f"{plan['weights']['files']} weight file(s) totalling "
           f"{round(plan['weights']['bytes'] / upgrade.GIB, 2)} GiB")
@@ -125,7 +126,7 @@ def main():
         # Answering them for an image-or-container manifest is worse than refusing: `reuse` prints "0.0 GiB" for the
         # 32 files and 102,262,310,123 bytes a nested manifest pins, and `plan` reaches its formatter with a None
         # engine revision and dies in a traceback.
-        print(upgrade.not_strata_shaped(args.host, args.backend, manifest), file=sys.stderr)
+        print(upgrade.not_strata_shaped(args.host, upgrade.name_of(graph, manifest), manifest), file=sys.stderr)
         return BLOCKED
     if args.action == 'reuse':
         found = upgrade.reuse_candidates(graph, args.host, manifest)

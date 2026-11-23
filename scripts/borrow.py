@@ -490,12 +490,16 @@ def weight_guard(name, host, backend):
     A host that cannot be answered is not a refusal here — `claim` is about to work with it at length, and its own
     connection failure is the clearer message.
     """
-    if backend is None or not serves_strata(host):
+    if backend is None or not serves_strata(host) or serves_tensorfold(name, host, backend):
         return
     refusal = retire.thin_ledger(declared.load(ROOT).retention, name, backend)
     if refusal:
         raise SystemExit(refusal)
     manifest = json.loads((ROOT / f'backends/{backend}.json').read_text())
+    if not upgrade.strata_shaped(manifest):
+        # Non-Strata manifests keep weights outside `strata_trial_roots` (e.g., under `model.directory`); checking
+        # them belongs to the multi-engine dispatch, not `strata_root()` + `{root}/data/models/`.
+        return
     pinned = upgrade.weight_entries(manifest)  # flat `files` or nested `model.files`: the same manifest, two shapes
     if not pinned:
         return
@@ -535,7 +539,7 @@ def claim(name, host, switch, idle_minutes, warm_now, backend=None, context=None
         # `claim <host>` resolves to the manifest `strata_default_backend` names, at that manifest's own context
         backend = host['strata_default_backend']
         context = context or json.loads((ROOT / f'backends/{backend}.json').read_text())['context']
-    if backend is not None and serves_strata(host):
+    if backend is not None and serves_strata(host) and not serves_tensorfold(name, host, backend):
         weight_guard(name, host, backend)      # F6: before a front, a tunnel or a load (T5.3)
     if switch:
         claimed_target(name, backend, context)  # refuse before anything starts

@@ -62,12 +62,18 @@ def weight_entries(manifest):
 
     Not every nested entry is hash-pinned: 9 of those 32 name a size and no `sha256`. The hash stays optional here -
     a size is still a pin, and a missing hash is an unknown to report rather than a refusal. Where two manifests are
-    compared (`supplies`), one side pinned by size alone and the other by size plus hash read as a mismatch: only the
-    hash-bearing side can prove the bytes are the same file, and pretending otherwise would let a reuse copy past a
-    check it never passed.
+    compared (`supplies`), any missing hash on either side (including both sides unhashed) reads as a mismatch: only a
+    hash-bearing pin on both sides can prove the bytes are the same file, and pretending otherwise would let a reuse
+    copy past a check it never passed.
     """
-    entries = manifest.get('files') or (manifest.get('model') or {}).get('files') or []
-    return [entry for entry in entries if isinstance(entry, dict) and entry.get('path') and entry.get('size') is not None]
+    model = manifest.get('model')
+    raw = manifest.get('files') or (model.get('files') if isinstance(model, dict) else None) or []
+    if not isinstance(raw, list):
+        return []
+    return [entry for entry in raw
+            if isinstance(entry, dict) and isinstance(entry.get('path'), str) and entry['path']
+            and isinstance(entry.get('size'), int) and not isinstance(entry.get('size'), bool)
+            and entry['size'] >= 0]
 
 
 def unhashed_weights(manifest):
@@ -77,7 +83,7 @@ def unhashed_weights(manifest):
 
 def pinned(manifest):
     """What a manifest says a prepared root holds: {path: (bytes, sha256)} — where the worker writes the weight."""
-    return {entry['path']: (int(entry['size']), entry.get('sha256')) for entry in weight_entries(manifest)}
+    return {entry['path']: (int(entry['size']), entry.get('sha256') or None) for entry in weight_entries(manifest)}
 
 
 def asks(manifest):
@@ -88,7 +94,7 @@ def asks(manifest):
     quantization filed under another name); only the bytes have to agree, which is why the comparison below is a
     coverage check rather than an equality of sets. The declared manifests use the same name on both sides.
     """
-    return {entry.get('same_as') or entry['path']: (int(entry['size']), entry.get('sha256'))
+    return {entry.get('same_as') or entry['path']: (int(entry['size']), entry.get('sha256') or None)
             for entry in weight_entries(manifest)}
 
 
@@ -100,7 +106,10 @@ def supplies(source, target):
     """Can the root SOURCE pins give what TARGET asks a reuse root to hold? Returns the gaps, by name."""
     held = pinned(source)
     missing = sorted(name for name in asks(target) if name not in held)
-    mismatched = sorted(name for name, want in asks(target).items() if name in held and held[name] != want)
+    mismatched = sorted(
+        name for name, want in asks(target).items()
+        if name in held and (want[1] is None or held[name][1] is None or held[name] != want)
+    )
     return missing, mismatched
 
 
@@ -120,13 +129,14 @@ def strata_shaped(manifest):
 def not_strata_shaped(host, backend_id, manifest):
     """The refusal `ops upgrade plan|reuse` gives a manifest it does not read, with what does read it."""
     blocks = [key for key in ('recipe', 'engine', 'image', 'model') if manifest.get(key)]
-    declared_blocks = ', '.join(blocks) if blocks else 'none of recipe/engine/image/model either'
+    shape_note = (f'it declares {", ".join(blocks)}, which is the shape of an engine that serves from an image or a '
+                  f'container rather than from a prepared root' if blocks
+                  else 'it declares none of recipe/engine/image/model either')
     return explain(
         f'backends/{backend_id}.json is not the kind of manifest {cli_name()} ops upgrade plan|reuse reads',
         ['those commands read the engine from `source_version`, `source_revision` and `ggml_revision` and the root '
          f'from infra/inventory.yml {host} `strata_trial_roots`; this manifest declares none of them',
-         f'it declares {declared_blocks}, which is the shape of an engine that serves from an image or a container '
-         f'rather than from a prepared root'],
+         shape_note],
         f'{cli_name()} model show <target> for what is declared, {cli_name()} ops storage {host}, '
         f'{cli_name()} ops prepare {host} --check, {cli_name()} ops drift',
         f'a plan/reuse reading of an image-or-container engine is its own design: name it before bending these '
@@ -236,6 +246,9 @@ def reuse_candidates(graph, host, manifest):
     source — a `thin` line being the important one.
     """
     out, why_not = [], []
+    pack = drafter_pack(manifest, host)
+    if not asks(manifest):
+        return {'candidates': [], 'download_bytes': 0, 'why_not': [], 'packs': [pack] if pack else []}
     for state, line in ledger_lines(graph, host):
         source_id = line.get('backend')
         if not source_id or source_id == name_of(graph, manifest):
@@ -258,7 +271,6 @@ def reuse_candidates(graph, host, manifest):
                     'engine_version': source.get('source_version'), 'bytes': weight_bytes(manifest),
                     'files': len(asks(manifest))})
     out.sort(key=lambda entry: (entry['engine_version'] or '', entry['backend']))
-    pack = drafter_pack(manifest, host)
     # A reuse answer that copies the weights is not the whole job: a drafter trial still fetches the pack its manifest
     # pins, and saying so here is what keeps a ladder reading honest about the one thing that changed.
     return {'candidates': out, 'download_bytes': weight_bytes(manifest), 'why_not': why_not,
@@ -410,7 +422,7 @@ def plan(graph, host, backend_id):
     """The ordered reading of an upgrade on HOST: declared facts, blockers, and the steps with their commands."""
     manifest = manifest_for(graph, backend_id)
     if not strata_shaped(manifest):
-        raise SystemExit(not_strata_shaped(host, backend_id, manifest))
+        raise SystemExit(not_strata_shaped(host, name_of(graph, manifest), manifest))
     key, root = trial_root(graph, host, manifest)
     current_backend = graph.nodes.get(host, {}).get('strata_backend')
     component = pinned_by(graph, host)
@@ -705,6 +717,8 @@ def draft_upgrade(graph, host, version, base_backend=None, revision=None, contex
         raise SystemExit(f'{host} has no strata_backend or strata_default_backend; pass --from BACKEND')
     base_manifest = manifest_for(graph, base_stem)
     resolved_base_stem = name_of(graph, base_manifest)
+    if not strata_shaped(base_manifest):
+        raise SystemExit(not_strata_shaped(host, resolved_base_stem, base_manifest))
     if host not in (base_manifest.get('workers') or {}):
         raise SystemExit(f'backends/{resolved_base_stem}.json does not name {host} in workers')
 

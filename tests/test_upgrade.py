@@ -85,10 +85,19 @@ class WeightEntriesTests(unittest.TestCase):
         source = {'files': [{'path': 'a', 'size': 10, 'sha256': 'e' * 64}]}
         target = {'model': {'files': [{'path': 'a', 'size': 10}]}}
         self.assertEqual(upgrade.supplies(source, target), ([], ['a']))
+        # both sides size-only is also a mismatch: equal size without a hash never proves identical bytes
+        unhashed_source = {'files': [{'path': 'a', 'size': 10}]}
+        unhashed_empty = {'model': {'files': [{'path': 'a', 'size': 10, 'sha256': ''}]}}
+        self.assertEqual(upgrade.supplies(unhashed_source, target), ([], ['a']))
+        self.assertEqual(upgrade.supplies(unhashed_empty, target), ([], ['a']))
 
     def test_an_entry_that_is_not_a_pin_is_dropped_rather_than_crashing_the_read(self):
-        manifest_ = {'files': [{'path': 'no-size'}, {'size': 1}, {'path': 'ok', 'size': 1}, 'not-a-dict']}
+        manifest_ = {'files': [{'path': 'no-size'}, {'size': 1}, {'path': 'bad-size', 'size': '10'},
+                               {'path': 'bool-size', 'size': True}, {'path': 'neg-size', 'size': -1},
+                               {'path': 'ok', 'size': 1}, 'not-a-dict']}
         self.assertEqual([entry['path'] for entry in upgrade.weight_entries(manifest_)], ['ok'])
+        # a Strata manifest carries `model` as a repository string; empty `files` must not call `.get` on it
+        self.assertEqual(upgrade.weight_entries({'model': 'Qwen/Qwen3.8-Flash-Coder', 'files': []}), [])
 
     def test_the_measured_half_of_f6_asks_about_the_nested_entries_too(self):
         from agentiac import retire
@@ -111,7 +120,7 @@ class ManifestShapeTests(unittest.TestCase):
     def test_a_manifest_of_neither_shape_still_names_what_it_declares(self):
         text = upgrade.not_strata_shaped('workere', 'odd-1', {'id': 'odd-1'})
         self.assertIn('none of recipe/engine/image/model either', text)
-
+        self.assertNotIn('which is the shape of an engine', text)
 
 
 def write_synthetic_site(root):
@@ -577,6 +586,39 @@ class CommandTests(SyntheticSiteTestCase):
             self.assertEqual(result.returncode, 1, f'{action}: {result.stderr}')
             self.assertIn('is not the kind of manifest', result.stderr)
             self.assertNotIn('0.0 GiB', result.stdout)
+
+    def test_refusal_and_draft_use_canonical_stem_and_zero_file_reuse_is_empty(self):
+        nested_alias = json.loads(json.dumps(NESTED))
+        nested_alias['id'] = 'legacy-infernix-id'
+        (self.root / 'backends/infernix-1.0-qfn-fp4-local.json').write_text(json.dumps(nested_alias, indent=2))
+        result = self.upgrade_cli('plan', 'workere', '--backend', 'legacy-infernix-id')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('backends/infernix-1.0-qfn-fp4-local.json is not the kind of manifest', result.stderr)
+
+        graph = declared.load(self.root)
+        with self.assertRaises(SystemExit) as caught:
+            upgrade.draft_upgrade(graph, 'workere', '1.0.0', base_backend='infernix-1.0-qfn-fp4-local')
+        self.assertIn('is not the kind of manifest', str(caught.exception))
+
+        empty_manifest = manifest('strata-empty-fixture', '0.2.12', [], ['workerb'])
+        self.assertEqual(upgrade.reuse_candidates(graph, 'workerb', empty_manifest)['candidates'], [])
+
+    def test_weight_guard_skips_tensorfold_and_nested_manifests_on_a_host_with_strata_trial_roots(self):
+        from agentiac import paths
+        with mock.patch.dict(os.environ, {'AGENTIAC_ROOT': str(self.root)}):
+            import borrow
+        tf_manifest = json.loads(json.dumps(NESTED))
+        tf_manifest['id'] = 'spark-tensorfold-v114'
+        tf_manifest['engine'] = {'repository': 'https://github.com/example/TensorFold.git', 'version': '1.1.4'}
+        (self.root / 'backends/tf-1.1.4-qfn-mxfp8-nvfp4.json').write_text(json.dumps(tf_manifest, indent=2))
+        (self.root / 'backends/infernix-1.0-qfn-fp4-local.json').write_text(json.dumps(NESTED, indent=2))
+        host = {'spark_tensorfold': True, 'strata_trial_roots': {'0.2.13': '/srv/agentiac/strata-0.2.13'}}
+        with mock.patch.object(borrow, 'ROOT', self.root), \
+             mock.patch.object(borrow, 'on_host') as on_host, \
+             mock.patch.object(borrow, 'strata_root', side_effect=AssertionError('strata_root must not be called')):
+            borrow.weight_guard('workere', host, 'tf-1.1.4-qfn-mxfp8-nvfp4')
+            borrow.weight_guard('workere', host, 'infernix-1.0-qfn-fp4-local')
+        on_host.assert_not_called()
 
     def test_reuse_json_names_the_root_and_the_cost_of_not_using_it(self):
         result = self.upgrade_cli('reuse', 'workera', '--backend', 'strata-0.2.12-qfn-gsq-rco-iq3_xxs', '--json')
