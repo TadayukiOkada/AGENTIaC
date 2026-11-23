@@ -2,12 +2,15 @@
 
 `scripts/borrow.py` can serve two ways today: the Strata rules (a trial root, `<prefix>-strata-inference`, the
 inventory's on-demand port) and a `spark_tensorfold` host's pinned service. An engine that serves from an image or a
-container has neither, so its manifest says how it is served (`workers.<host>.service`). These tests run against a
-fixture checkout with `borrow.ROOT` pointed at it, so no shipped manifest is read and no host is contacted.
+container has neither, so its manifest says how it is served (`workers.<host>.service`): the unit, port and directory,
+the container, and the `*.py` under `scripts/` that `ops prepare` installs as the `<root>/worker.py` the unit runs.
+These tests run against a fixture checkout with `borrow.ROOT` pointed at it, so no shipped manifest is read and no host
+is contacted; where the unit's text or launch script matters, `borrow.CODE` is pointed at a fixture core checkout.
 """
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import types
@@ -45,12 +48,15 @@ class Fixture(unittest.TestCase):
         return {'ansible_host': '10.0.0.9', 'backend_port': 18080, 'ondemand_backend_port': 18083,
                 'project_root': '/srv/agentiac', **extra}
 
+    def service(self, **overrides):
+        """What a manifest declares for an engine that serves from a container: unit, port, directory, image, script."""
+        declared_service = {'unit': f'{self.prefix}-infernix-inference', 'port': 18090,
+                            'root': '/srv/agentiac/evaluations/infernix/service', 'container': 'infernix-serving',
+                            'worker': 'infernix-worker.py'}
+        return {**declared_service, **overrides}
+
 
 class DeclaredServiceTests(Fixture):
-    def service(self, **overrides):
-        declared_service = {'unit': f'{self.prefix}-infernix-inference', 'port': 18090,
-                            'root': '/srv/agentiac/evaluations/infernix/service', 'container': 'infernix-serving'}
-        return {**declared_service, **overrides}
 
     def test_a_manifest_that_declares_its_service_is_read_from_it(self):
         name = self.manifest('infernix-fixture', {'workers': {'workere': {'service': self.service()}}})
@@ -58,7 +64,7 @@ class DeclaredServiceTests(Fixture):
                                                  'workere'),
                          {'unit': f'{self.prefix}-infernix-inference', 'port': 18090,
                           'root': '/srv/agentiac/evaluations/infernix/service', 'start_timeout_s': None,
-                          'container': 'infernix-serving', 'status_path': None})
+                          'container': 'infernix-serving', 'status_path': None, 'worker': 'infernix-worker.py'})
 
     def test_a_manifest_that_declares_nothing_leaves_the_strata_rules_in_charge(self):
         manifest = {'source_version': '0.2.8', 'workers': {'workera': {}}}
@@ -79,6 +85,7 @@ class DeclaredServiceTests(Fixture):
         self.assertIsNone(spec['status_path'])
         self.assertIsNone(spec['start_timeout_s'])
         self.assertIsNone(spec['container'])
+        self.assertIsNone(spec['worker'])
 
     def test_a_unit_this_site_could_not_install_is_refused_by_name(self):
         # Every deployed name is <resource_prefix>-<role> (D6.8); a unit the front stops must be one of ours.
@@ -102,7 +109,9 @@ class DeclaredServiceTests(Fixture):
             with self.subTest(service=bad), self.assertRaises(SystemExit):
                 self.borrow.service_spec({'workers': {'workere': {'service': bad}}}, 'workere')
         for field, value in (('unit', f'{self.prefix}-'), ('root', '/'), ('root', '/srv/../etc'),
-                             ('root', '/srv/bad;rm'), ('container', 'bad name')):
+                             ('root', '/srv/bad;rm'), ('container', 'bad name'), ('worker', 'infernix worker.py'),
+                             ('worker', 'not_a_python_file'), ('worker', '../elsewhere.py'), ('worker', 'a..b.py'),
+                             ('worker', 3)):
             with self.subTest(field=field, value=value), self.assertRaises(SystemExit) as caught:
                 self.borrow.service_spec({'workers': {'workere': {'service': self.service(**{field: value})}}},
                                          'workere')
@@ -187,19 +196,99 @@ class ClaimResolutionTests(Fixture):
 
 
 class PrepareUnitTests(Fixture):
-    def test_a_service_with_no_unit_text_names_the_two_files_that_would_give_it_one(self):
+    def recipe(self, roles=('infernix-inference',), worker=True, template=True):
+        """A stand-in for the core checkout a declared service's unit text and launch script come from (D7.1)."""
+        code = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, code)
+        (code / 'infra/templates').mkdir(parents=True)
+        (code / 'scripts').mkdir(parents=True)
+        units = ''.join(f"      {role}: {{file: '{{{{ resource_prefix }}}}-{role}.service', run: false}}\n"
+                        for role in roles)
+        (code / 'infra/unit.yml').write_text(f'- name: Install a project systemd unit\n  vars:\n    units:\n{units}')
+        if template:
+            (code / 'infra/templates/infernix-inference.service.j2').write_text(
+                '[Service]\nExecStart=/usr/bin/python3 {{ directory }}/worker.py\n')
+        if worker:
+            (code / 'scripts/infernix-worker.py').write_text('# the launch this engine declares\n')
+        self.borrow.CODE = code
+        return code
+
+    def attempt(self, name, record=True):
+        """`ops prepare` for the fixture manifest, with the host commands recorded instead of run."""
+        root, config = self.borrow.ondemand_config('workere', self.host(), 15, name, 262144, None)
+        self.touched, self.pushed, self.played = [], [], []
+        if record:
+            def on_host(host, command, **kw):
+                self.touched.append((command, kw.get('input')))
+                return types.SimpleNamespace(returncode=0, stdout='', stderr='')
+
+            self.borrow.on_host = on_host
+            self.borrow.put = lambda host, local, remote: self.pushed.append((str(local), remote)) or 0
+            self.borrow.run_playbook = lambda *args: self.played.append(args) or 0
+        self.borrow.prepare_backend('workere', self.host(), config, name)
+        return root, self.touched, self.pushed, self.played
+
+    def refused(self, name):
+        """The message a preparation refuses with, and the host commands it reached: a refusal must reach none."""
+        with self.assertRaises(SystemExit) as caught:
+            self.attempt(name)
+        return str(caught.exception), self.touched
+
+    def test_a_service_with_no_unit_text_names_every_file_that_would_give_it_one(self):
         name = self.manifest('infernix-fixture', {'workers': {'workere': {'service': {
             'unit': f'{self.prefix}-infernix-inference', 'port': 18090, 'root': '/srv/agentiac/evaluations/infernix'}}}})
-        root, config = self.borrow.ondemand_config('workere', self.host(), 15, name, 262144, None)
-        touched = []
-        self.borrow.on_host = lambda host, command, **kw: touched.append(command) or types.SimpleNamespace(
-            returncode=0, stdout='', stderr='')
-        with self.assertRaises(SystemExit) as caught:
-            self.borrow.prepare_backend('workere', self.host(), config, name)
-        message = str(caught.exception)
+        message, touched = self.refused(name)
         self.assertIn(f'cannot install `{self.prefix}-infernix-inference`', message)
         self.assertIn('infra/templates/infernix-inference.service.j2', message)
+        self.assertIn('scripts/<worker>.py', message)
+        self.assertIn('run: false', message)
+        self.assertNotIn('run: true', message)
         self.assertEqual(touched, [])
+
+    def test_a_role_with_text_but_no_worker_to_install_is_refused_before_the_host_is_asked(self):
+        # The unit text this site has runs `<root>/worker.py`; installing a unit whose script is nowhere is how a
+        # claim ends up holding a GPU with a service that cannot start.
+        name = self.manifest('infernix-fixture', {'workers': {'workere': {'service': self.service(worker=None)}}})
+        self.recipe()
+        message, touched = self.refused(name)
+        self.assertIn('service.worker', message)
+        self.assertIn('scripts/<worker>.py', message)
+        self.assertNotIn('has no role', message)
+        self.assertEqual(touched, [])
+
+    def test_a_declared_worker_that_the_code_does_not_have_is_refused_by_name(self):
+        name = self.manifest('infernix-fixture', {'workers': {'workere': {'service': self.service()}}})
+        self.recipe(worker=False)
+        message, touched = self.refused(name)
+        self.assertIn('scripts/infernix-worker.py', message)
+        self.assertIn('does not exist', message)
+        self.assertNotIn('has no role', message)
+        self.assertEqual(touched, [])
+
+    def test_the_map_is_not_the_text_a_role_in_it_without_a_template_is_refused(self):
+        name = self.manifest('infernix-fixture', {'workers': {'workere': {'service': self.service()}}})
+        self.recipe(template=False)
+        message, touched = self.refused(name)
+        self.assertIn('no `infra/templates/infernix-inference.service.j2`', message)
+        self.assertEqual(touched, [])
+
+    def test_preparation_installs_the_script_the_unit_runs_and_the_facts_that_script_needs(self):
+        name = self.manifest('infernix-fixture', {'workers': {'workere': {'service': self.service(
+            status_path='/health')}}})
+        code = self.recipe()
+        (self.fixture / 'secrets/nodes').mkdir(parents=True)
+        (self.fixture / 'secrets/nodes/workere.key').write_text('fixture-key\n')
+        root, touched, pushed, played = self.attempt(name)
+        self.assertIn((str(self.fixture / f'backends/{name}.json'), f'{root}/backend-manifest.json'), pushed)
+        self.assertIn((str(code / 'scripts/infernix-worker.py'), f'{root}/worker.py'), pushed)
+        written = {command[0].split('> ')[1]: body for command, body in touched
+                   if isinstance(command, list) and 'service.json' in command[0]}
+        self.assertEqual(list(written), [f'{root}/service.json'])
+        facts = json.loads(written[f'{root}/service.json'])
+        self.assertEqual(facts, {'unit': f'{self.prefix}-infernix-inference', 'port': 18090, 'root': root,
+                                 'container': 'infernix-serving', 'status_path': '/health'})
+        self.assertEqual(played, [('unit', 'workere', '-e', 'unit=infernix-inference',
+                                   '-e', f'directory={root}')])
 
     def test_the_roles_this_site_can_install_are_read_from_the_file_that_installs_them(self):
         self.assertEqual(self.borrow.installed_unit_roles(), {'ondemand', 'spark-tensorfold'})

@@ -15,6 +15,21 @@
         that:
           - unit in units
           - directory is defined
+    # A role in the map without its text would fail here, on the host, after the claim was already made (a
+    # half-prepared engine holding a GPU). `src:` is resolved on the control side, so the check runs there.
+    - name: Require the unit text this role installs
+      ansible.builtin.stat:
+        path: '{{ playbook_dir }}/templates/{{ unit }}.service.j2'
+      delegate_to: localhost
+      run_once: true
+      register: unit_text
+    - name: Refuse a role that has no text
+      ansible.builtin.assert:
+        that:
+          - unit_text.stat.exists
+        fail_msg: 'infra/unit.yml has the role {{ unit }}, but there is no templates/{{ unit }}.service.j2 to install from'
+        success_msg: 'templates/{{ unit }}.service.j2 is the text this installs'
+      run_once: true
     - name: Install the unit
       become: true
       ansible.builtin.template:
