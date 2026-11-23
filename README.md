@@ -1,4 +1,4 @@
-# AGENTIaC (formerly agent-infra)
+# AGENTIaC
 Operator-controlled local coding-agent inference and evaluation on heterogeneous Ubuntu workers.
 The control host runs the CLI, a private loopback gateway, agent frontends and evaluation history;
 worker GPUs serve pinned models over SSH forwards. Dedicated workers are the default; shared workers
