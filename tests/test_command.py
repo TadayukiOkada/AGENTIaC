@@ -480,16 +480,33 @@ class WorktreeTests(unittest.TestCase):
 
 class CompletionTests(unittest.TestCase):
     def test_script_completes_nested_commands_and_option_values(self):
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            command.main(['completion'])
+        with patch.dict(os.environ):
+            os.environ.pop('AGENTIAC_COMMAND', None)
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                command.main(['completion'])
         probe = out.getvalue() + '''
+complete -p agentiac
 t() { COMP_WORDS=("$@"); COMP_CWORD=$((${#COMP_WORDS[@]}-1)); COMPREPLY=(); _agentiac; echo "${COMPREPLY[*]}"; }
 t agentiac ops st; t agentiac code -m rout; t agentiac release ""
 '''
         result = subprocess.run(['bash', '-c', probe], capture_output=True, text=True, check=True)
         borrowed = ' '.join(n for n, h in HOSTS.items() if h.get('borrowed'))
         self.assertEqual(result.stdout.splitlines(),
-                         ['stop start storage', 'router', borrowed])
+                         ['complete -o default -F _agentiac agentiac',
+                          'stop start storage', 'router', borrowed])
+
+    def test_script_registers_invoked_command_name(self):
+        with patch.dict(os.environ, {'AGENTIAC_COMMAND': 'my-site'}):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                command.main(['completion'])
+        probe = out.getvalue() + '''
+complete -p my-site
+if complete -p agentiac 2>/dev/null; then echo unexpected; fi
+COMP_WORDS=(my-site ops st); COMP_CWORD=2; COMPREPLY=(); _my_site; echo "${COMPREPLY[*]}"
+'''
+        result = subprocess.run(['bash', '-c', probe], capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.splitlines(),
+                         ['complete -o default -F _my_site my-site', 'stop start storage'])
 
 
 if __name__ == '__main__':
