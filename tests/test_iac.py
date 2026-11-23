@@ -144,6 +144,21 @@ class CrossFileTests(unittest.TestCase):
                 self.assertEqual(host['inference_unit'], declared.resource('spark-tensorfold', SITE), name)
                 self.assertTrue(host.get('spark_tensorfold'), name)
 
+    def test_every_unit_role_has_the_template_unit_yaml_installs(self):
+        """`ops prepare` installs `infra/templates/<role>.service.j2` for a role in `infra/unit.yml`'s map.
+
+        The map is the list of roles a manifest may declare a service for; the template is what actually gets written
+        to `/etc/systemd/system/`. A role added without its text fails inside the playbook, on the worker, after the
+        claim has already been made — so the playbook refuses on the control side first, and this checks the pair.
+        """
+        play = yaml.safe_load((ROOT / 'infra/unit.yml').read_text())[0]
+        for role in play['vars']['units']:
+            with self.subTest(role=role):
+                self.assertTrue((ROOT / f'infra/templates/{role}.service.j2').is_file(), role)
+        steps = [task.get('name') for task in play['tasks']]
+        self.assertIn('Require the unit text this role installs', steps)
+        self.assertIn('Refuse a role that has no text', steps)
+
     def test_every_strata_engine_version_has_a_root_on_its_hosts(self):
         for path in STRATA:
             manifest = json.loads(path.read_text())

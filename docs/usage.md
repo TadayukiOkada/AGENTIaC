@@ -157,10 +157,14 @@ version has there (`strata_trial_roots` in `infra/inventory.yml`) under
 `<prefix>-strata-inference`. An engine that serves from an image or a container has no such
 root, so its own manifest says how it is served: `workers.<host>.service` names the `unit` this
 project starts and stops (stopping it is what frees the GPU), the internal `port` the front
-reaches, the `root` its launch files live in, and - for a container - the `container` name the
-trial watch reads the engine's processes from. A host that declares neither refuses the claim,
-and a declared service whose unit this site has no text for (`infra/unit.yml`'s `units:` map and
-`infra/templates/<role>.service.j2`) is refused before the host is touched.
+reaches, the `root` its launch files live in, the `container` name the trial watch reads the
+engine's processes from, and the `worker` script - a `*.py` under `scripts/`, installed as the
+`<root>/worker.py` that unit runs, beside the `service.json` holding the container, port and root
+it launches with. A host that declares neither refuses the claim, and a declared service whose
+recipe this checkout does not have is refused before the host is touched: the role in
+`infra/unit.yml`'s `units:` map, the text `infra/templates/<role>.service.j2` and the declared
+script, all three named by the refusal. `ops prepare`'s playbook checks the text again on the
+control side, so a role added without its template does not fail halfway through a claim.
 
 After a reboot, `agentiac reclaim` restores the active `local-coder` host without moving
 the route or restarting the gateway. Hosts armed with `auto_reclaim: true` in

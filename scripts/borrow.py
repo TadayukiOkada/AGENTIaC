@@ -139,7 +139,7 @@ def service_spec(manifest, name):
                                  'fix the `service:` block, or drop it and let the Strata rules serve this manifest'))
     unit, port, root = declared_service.get('unit'), declared_service.get('port'), declared_service.get('root')
     container, status_path = declared_service.get('container'), declared_service.get('status_path')
-    start_timeout_s = declared_service.get('start_timeout_s')
+    worker, start_timeout_s = declared_service.get('worker'), declared_service.get('start_timeout_s')
     problems = []
     if (not isinstance(unit, str) or not unit.startswith(f'{PREFIX}-')
             or not re.fullmatch(r'[a-z0-9][a-z0-9-]*', unit.removeprefix(f'{PREFIX}-'))):
@@ -156,13 +156,17 @@ def service_spec(manifest, name):
     if start_timeout_s is not None and (not isinstance(start_timeout_s, int) or isinstance(start_timeout_s, bool)
                                         or start_timeout_s < 1):
         problems.append(('start_timeout_s', 'when declared, is how long the front waits for this engine to be ready'))
+    if worker is not None and (not isinstance(worker, str)
+                               or not re.fullmatch(r'[a-z0-9][a-z0-9._-]*\.py', worker)):
+        problems.append(('worker', 'when declared, must be a `*.py` under `scripts/`: the script this service runs on '
+                                   'the host, which is where an engine\'s own launch belongs'))
     if problems:
         raise SystemExit(explain(f'the service this manifest declares for {name} is not usable',
                                  [f'`{key}` {problem}' for key, problem in problems],
                                  f'grep -n -A 12 "workers" backends/<manifest>.json',
                                  'fix the `service:` block, or drop it and let the Strata rules serve this manifest'))
     return {'unit': unit, 'port': port, 'root': root.rstrip('/'), 'start_timeout_s': start_timeout_s,
-            'container': container, 'status_path': status_path}
+            'container': container, 'status_path': status_path, 'worker': worker}
 
 
 def declared_units(name):
@@ -448,15 +452,18 @@ def installed_unit_roles():
     return set(((play[0].get('vars') or {}).get('units') or {}))
 
 
-def missing_unit(role):
-    """The refusal for a service whose unit this site has no text for yet, naming the two files that would give it one."""
+def missing_unit(role, worker=None):
+    """The refusal for a service this site cannot install yet, naming every file that would give it one."""
     return explain(f'this site cannot install `{PREFIX}-{role}`: `infra/unit.yml` has no role `{role}`',
                    ['a claimed engine is served by a unit this project installs and stops, because stopping it is what '
                     'releases the GPU (docs/operations.md)',
-                    'the role name is the unit name without the site\'s resource prefix'],
-                   'grep -n -A 6 "units:" infra/unit.yml; ls infra/templates',
-                   f'add `{role}: {{file: \'{{{{ resource_prefix }}}}-{role}.service\', run: true}}` to that map and write '
-                   f'`infra/templates/{role}.service.j2` (the recipe that starts the engine), then repeat the claim')
+                    'the role name is the unit name without the site\'s resource prefix',
+                    'the unit text runs `<root>/worker.py`; `ops prepare` installs that script from '
+                    f'`scripts/{worker or "<worker>.py"}`, the name the manifest declares as `service.worker`'],
+                   'grep -n -A 6 "units:" infra/unit.yml; ls infra/templates scripts',
+                   f'add `{role}: {{file: \'{{{{ resource_prefix }}}}-{role}.service\', run: true}}` to that map, write '
+                   f'`infra/templates/{role}.service.j2`, and put the launch script at '
+                   f'`scripts/{worker or "<worker>.py"}`, then repeat the claim')
 
 
 def prepare_backend(name, host, config, backend=None):
@@ -477,7 +484,15 @@ def prepare_backend(name, host, config, backend=None):
     if service:
         role = service['unit'].removeprefix(f'{PREFIX}-')
         if role not in installed_unit_roles():
-            raise SystemExit(missing_unit(role))
+            raise SystemExit(missing_unit(role, service['worker']))
+        if not (CODE / 'infra' / 'templates' / f'{role}.service.j2').exists():
+            # Being in the map is not having the text: unit.yml would fail mid-playbook on the host otherwise.
+            raise SystemExit(explain(f'`infra/unit.yml` has the role `{role}` but no `infra/templates/{role}.service.j2`',
+                                     ['the map names the unit and the template is its text; both live in `core/`'],
+                                     'ls infra/templates/', 'write the template, then repeat the claim'))
+        worker_src = CODE / 'scripts' / service['worker'] if service['worker'] else None
+        if worker_src is None or not worker_src.exists():
+            raise SystemExit(missing_unit(role, service['worker']))
         root = service['root']
         made = on_host(host, [f'umask 077 && mkdir -p {root}/watch'])
         key = api_key(name, host)
@@ -488,6 +503,15 @@ def prepare_backend(name, host, config, backend=None):
         launch = ROOT / f'backends/{backend}.launch.json'
         if not failed and launch.exists():  # the engine flags this site claims the manifest with (decision 13)
             failed = put(host, launch, f'{root}/launch-args.json')
+        # What the installed unit runs is `<root>/worker.py`, and what that script needs to launch -- the container,
+        # the port, the directory -- is written beside it instead of being compiled into the unit text.
+        if not failed:
+            failed = put(host, worker_src, f'{root}/worker.py')
+        facts = json.dumps({'unit': service['unit'], 'port': service['port'], 'root': root,
+                            'container': service['container'], 'status_path': service['status_path']},
+                           indent=2) + '\n'
+        if not failed:
+            failed = on_host(host, [f'umask 077 && cat > {root}/service.json'], input=facts).returncode
         if failed:
             raise SystemExit(f'could not prepare the {backend} service on {name}')
         run_playbook('unit', name, '-e', f'unit={role}', '-e', f'directory={root}')
