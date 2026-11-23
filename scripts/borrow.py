@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -93,19 +94,106 @@ def serves_strata(host):
     return host.get('backend') == 'strata' or 'strata_backend' in host or bool(host.get('strata_trial_roots'))
 
 
-def other_serving_units(host, unit):
+def other_serving_units(host, unit, name=None):
     """The backend units of this host that the front being installed does NOT start.
 
     A host has one API port, so whichever backend it is not serving must not keep holding that port or the memory behind it
     (docs/operations.md). The Orins switch between their llama.cpp default (`agentiac-inference`) and a Strata manifest
     (`agentiac-strata-inference`); the Strata hosts have only the Strata one, named by `inference_unit`; a
     `spark_tensorfold` host switches between its pinned TensorFold service - which IS its `inference_unit` -
-    and a root of its `strata_trial_roots`.
+    and a root of its `strata_trial_roots`. With NAME given, a manifest that declares how it is served adds its own
+    unit to the set, because the point of this list is "every unit that could be holding the port", not "the two names
+    this file knows".
     """
     units = {host.get('inference_unit'), f'{PREFIX}-strata-inference'}
     if host.get('default_profile'):
         units.add(f'{PREFIX}-inference')
+    if name:
+        units.update(declared_units(name))
     return sorted(other for other in units if other and other != unit)
+
+
+def service_spec(manifest, name):
+    """How MANIFEST says its engine is served on host NAME, or None when it says nothing.
+
+    A Strata manifest is served by the rules in this file (a trial root, `<prefix>-strata-inference`, the inventory's
+    on-demand backend port). An engine that serves from an image or a container has no such rules, so its manifest
+    names the service instead: `workers.<host>.service` with the `unit` the project starts, the internal `port` the
+    front reaches, the `root` the launch files live in, and - for a container - the `container` name whose PIDs and
+    cgroup belong to it. Declaring it in the manifest is what keeps `claim`, `ops prepare`, `ops drift` and the trial
+    watch agreeing about one engine, instead of each carrying its own engine name. `status_path` and `start_timeout_s`
+    are only for a service that differs from the defaults the Strata trials use: the watch answers its own status
+    route and the front its own readiness wait when they are not declared.
+
+    Only what the serving path needs is read here: the image, the artifact and the engine flags stay in the manifest
+    for the host-side worker and the identity checks to read.
+    """
+    worker = (manifest.get('workers') or {}).get(name) or {}
+    if 'service' not in worker or worker['service'] is None:
+        return None
+    declared_service = worker['service']
+    if not isinstance(declared_service, dict):
+        raise SystemExit(explain(f'the service this manifest declares for {name} is not usable',
+                                 ['`service` must be a mapping with `unit`, `port` and `root`'],
+                                 'grep -n -A 12 "workers" backends/<manifest>.json',
+                                 'fix the `service:` block, or drop it and let the Strata rules serve this manifest'))
+    unit, port, root = declared_service.get('unit'), declared_service.get('port'), declared_service.get('root')
+    container, status_path = declared_service.get('container'), declared_service.get('status_path')
+    start_timeout_s = declared_service.get('start_timeout_s')
+    problems = []
+    if (not isinstance(unit, str) or not unit.startswith(f'{PREFIX}-')
+            or not re.fullmatch(r'[a-z0-9][a-z0-9-]*', unit.removeprefix(f'{PREFIX}-'))):
+        problems.append(('unit', f'must be a name this site deploys: <resource_prefix>-<role>, so `{PREFIX}-...`'))
+    if not isinstance(port, int) or isinstance(port, bool) or not 1024 <= port <= 65535:
+        problems.append(('port', 'must be the internal port the front reaches, an int in 1024..65535'))
+    if (not isinstance(root, str) or not root.startswith('/') or not root.rstrip('/')
+            or '..' in Path(root).parts or not re.fullmatch(r'/[A-Za-z0-9._/-]+', root)):
+        problems.append(('root', 'must be an absolute worker directory'))
+    if container is not None and (not isinstance(container, str) or not container or any(c.isspace() for c in container)):
+        problems.append(('container', 'when declared, must be the container name'))
+    if status_path is not None and (not isinstance(status_path, str) or not status_path.startswith('/')):
+        problems.append(('status_path', 'when declared, must be a route like /health'))
+    if start_timeout_s is not None and (not isinstance(start_timeout_s, int) or isinstance(start_timeout_s, bool)
+                                        or start_timeout_s < 1):
+        problems.append(('start_timeout_s', 'when declared, is how long the front waits for this engine to be ready'))
+    if problems:
+        raise SystemExit(explain(f'the service this manifest declares for {name} is not usable',
+                                 [f'`{key}` {problem}' for key, problem in problems],
+                                 f'grep -n -A 12 "workers" backends/<manifest>.json',
+                                 'fix the `service:` block, or drop it and let the Strata rules serve this manifest'))
+    return {'unit': unit, 'port': port, 'root': root.rstrip('/'), 'start_timeout_s': start_timeout_s,
+            'container': container, 'status_path': status_path}
+
+
+def declared_units(name):
+    """Every unit that any manifest declares for host NAME: the units a claim of another engine could leave running."""
+    units = set()
+    for path in (ROOT / 'backends').glob('*.json'):
+        try:
+            manifest = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(manifest, dict):  # a file that is not a manifest declares no service (backends/ holds both)
+            continue
+        try:
+            spec = service_spec(manifest, name)
+        except SystemExit:
+            continue  # a malformed declaration is reported by the command that reads it, not from a unit list
+        if spec:
+            units.add(spec['unit'])
+    return units
+
+
+def undeclared_backend(name, host, backend):
+    """The refusal for a `--backend` this host has no way to serve, naming the two ways a manifest is served."""
+    return explain(f'{name} cannot serve backends/{backend}.json: this host declares neither way of serving it',
+                   ['the Strata way: `backend: strata`, or a `strata_backend`/`strata_default_backend` to serve by '
+                    'default, or `strata_trial_roots` naming the root that manifest prepares into',
+                   'the declared way: `workers` names this host and its `service` block gives the unit, the internal '
+                    'port, the root, and for a container the container name'],
+                   f'grep -n -A 12 "{name}" infra/inventory.yml; grep -n -A 20 "workers" backends/{backend}.json',
+                   f'declare the trial root (Strata) or the `service` block (an image or container engine), then '
+                   f'{cli_name()} ops prepare {name} --backend {backend} --check')
 
 
 def api_key(name, host):
@@ -253,6 +341,21 @@ def serves_tensorfold(name, host, backend):
     return bool(host.get('spark_tensorfold')) and backend in (None, tensorfold_backend(name))
 
 
+def manifest_service(name, backend):
+    """The service block `backends/<backend>.json` declares for host NAME, or None where it declares none.
+
+    A file that is not there declares nothing: the command that needs the manifest itself reads it and reports its
+    own absence (`strata_root`, the claim's `manifest_file`), so this answer only decides how to serve.
+    """
+    if backend is None:
+        return None
+    try:
+        manifest = json.loads((ROOT / f'backends/{backend}.json').read_text())
+    except (OSError, ValueError):
+        return None
+    return service_spec(manifest, name) if isinstance(manifest, dict) else None
+
+
 def tensorfold_root(host):
     return host['project_root'] + '/evaluations/spark-flash-next/service-tensorfold'
 
@@ -272,6 +375,25 @@ def ondemand_config(name, host, idle_minutes, backend=None, context=None, engine
                       # the front reports what it serves from this manifest (IP-02, T4.1)
                       'manifest_file': f'{root}/backend-manifest.json'}
     internal = host['ondemand_backend_port']
+    service = manifest_service(name, backend)
+    if service:
+        # An engine that serves from an image or a container has no Strata trial root and no `<prefix>-strata-inference`
+        # unit, so its manifest says how it is served and this resolves the same three facts a claim needs: the root
+        # the launch files live in, the unit that holds the internal port, and that port. The start and stop stay
+        # "the unit the project owns", which is what releases the GPU. A manifest that declares a service is served
+        # that way even on a host that also runs Strata trials: the declaration is the more specific statement.
+        root, unit = service['root'], service['unit']
+        listen = host['strata_api_port'] if host.get('backend') == 'strata' else host['backend_port']
+        return root, {'listen_port': listen, 'backend_port': service['port'],
+                      'key_file': f'{root}/api.key', 'unit': unit,
+                      'container': service['container'], 'status_path': service['status_path'],
+                      'start': ['sudo', '-n', 'systemctl', 'start', unit],
+                      'stop': ['sudo', '-n', 'systemctl', 'stop', unit],
+                      'idle_s': int(idle_minutes * 60),
+                      'start_timeout_s': service['start_timeout_s'] or 1300,
+                      # shown by the front's status, and what the gateway's identity comparison expects (IP-02, T4.1)
+                      'backend': backend, 'context': context,
+                      'manifest_file': f'{root}/backend-manifest.json'}
     if serves_strata(host):
         root, unit = strata_root(host, backend), f'{PREFIX}-strata-inference'
         start = [f'{root}/.venv/bin/python', f'{root}/start-worker.py', '--node', name, '--root', root,
@@ -320,6 +442,23 @@ def install_front(name, host, directory):
                                  f'{cli_name()} ops preflight {name}, fix what it reports, then repeat the claim'))
 
 
+def installed_unit_roles():
+    """The roles `infra/unit.yml` can install, read from its own `units:` map (that file is what makes a unit's text)."""
+    play = yaml.safe_load((CODE / 'infra' / 'unit.yml').read_text())
+    return set(((play[0].get('vars') or {}).get('units') or {}))
+
+
+def missing_unit(role):
+    """The refusal for a service whose unit this site has no text for yet, naming the two files that would give it one."""
+    return explain(f'this site cannot install `{PREFIX}-{role}`: `infra/unit.yml` has no role `{role}`',
+                   ['a claimed engine is served by a unit this project installs and stops, because stopping it is what '
+                    'releases the GPU (docs/operations.md)',
+                    'the role name is the unit name without the site\'s resource prefix'],
+                   'grep -n -A 6 "units:" infra/unit.yml; ls infra/templates',
+                   f'add `{role}: {{file: \'{{{{ resource_prefix }}}}-{role}.service\', run: true}}` to that map and write '
+                   f'`infra/templates/{role}.service.j2` (the recipe that starts the engine), then repeat the claim')
+
+
 def prepare_backend(name, host, config, backend=None):
     """Install what the front's start command needs; never start the model."""
     if serves_tensorfold(name, host, backend):
@@ -333,6 +472,25 @@ def prepare_backend(name, host, config, backend=None):
         if written.returncode or put(host, ROOT / f'backends/{backend}.json', f'{root}/backend-manifest.json'):
             raise SystemExit('could not prepare Spark TensorFold worker')
         run_playbook('unit', name, '-e', 'unit=spark-tensorfold', '-e', f'directory={root}')
+        return
+    service = manifest_service(name, backend)
+    if service:
+        role = service['unit'].removeprefix(f'{PREFIX}-')
+        if role not in installed_unit_roles():
+            raise SystemExit(missing_unit(role))
+        root = service['root']
+        made = on_host(host, [f'umask 077 && mkdir -p {root}/watch'])
+        key = api_key(name, host)
+        written = on_host(host, [f'umask 077 && cat > {root}/api.key'], input=f'{key}\n')
+        failed = made.returncode or written.returncode
+        if not failed:
+            failed = put(host, ROOT / f'backends/{backend}.json', f'{root}/backend-manifest.json')
+        launch = ROOT / f'backends/{backend}.launch.json'
+        if not failed and launch.exists():  # the engine flags this site claims the manifest with (decision 13)
+            failed = put(host, launch, f'{root}/launch-args.json')
+        if failed:
+            raise SystemExit(f'could not prepare the {backend} service on {name}')
+        run_playbook('unit', name, '-e', f'unit={role}', '-e', f'directory={root}')
         return
     if serves_strata(host):
         root, key = strata_root(host, backend), api_key(name, host)
@@ -351,17 +509,26 @@ def prepare_backend(name, host, config, backend=None):
 
 
 def start_watch(name, host, root, config):
-    """(Re)start the trial resource log and stop rules (strata-trial-watch.py) for a manifest backend."""
+    """(Re)start the trial resource log and stop rules (strata-trial-watch.py) for a claimed manifest backend.
+
+    The unit it watches and stops is the one this claim resolved, not a name hard-coded here, and a containerized
+    engine names its container so the watch reads that container's PIDs and cgroup (see the watch's own docstring).
+    """
     label = f"{config['backend']}-{(config['context'] or 0) // 1024 or 'default'}k"
     stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
     on_host(host, ['sudo', '-n', 'systemctl', 'stop', WATCH])
     on_host(host, ['sudo', '-n', 'systemctl', 'reset-failed', WATCH])
     if put(host, CODE / 'scripts/strata-trial-watch.py', f'{root}/trial-watch.py'):
         raise SystemExit(f'could not install the trial watch on {name}')
-    started = on_host(host, ['sudo', '-n', 'systemd-run', f'--unit={WATCH}', f'--uid={declared.account(host, ROOT)}', '/usr/bin/python3',
-                             f'{root}/trial-watch.py', '--log', f'{root}/watch/{label}-{stamp}.jsonl',
-                             '--port', str(config['backend_port']), '--key-file', config['key_file'],
-                             '--unit', f'{PREFIX}-strata-inference', '--front', PROXY])
+    watch = ['sudo', '-n', 'systemd-run', f'--unit={WATCH}', f'--uid={declared.account(host, ROOT)}', '/usr/bin/python3',
+             f'{root}/trial-watch.py', '--log', f'{root}/watch/{label}-{stamp}.jsonl',
+             '--port', str(config['backend_port']), '--key-file', config['key_file'],
+             '--unit', config['unit'], '--front', PROXY]
+    if config.get('container'):
+        watch += ['--container', config['container']]
+    if config.get('status_path'):
+        watch += ['--status-path', config['status_path']]
+    started = on_host(host, watch)
     if started.returncode:
         raise SystemExit(f'trial watch failed to start on {name}: {started.stderr.strip()}')
 
@@ -393,15 +560,17 @@ def enable_ondemand(name, host, idle_minutes, backend=None, context=None, engine
     unchanged = current.stdout == wanted + script_hash + '  -\n' and running_front_directory(host) == directory
     if not unchanged:
         on_host(host, ['sudo', '-n', 'systemctl', 'stop', config['unit']])  # never adopt a model started with other settings
-        for other in other_serving_units(host, config['unit']):  # the backend this front replaces may still hold the RAM and the internal port
+        for other in other_serving_units(host, config['unit'], name):  # the backend this front replaces may still hold the RAM and the internal port
             on_host(host, ['sudo', '-n', 'systemctl', 'stop', other])
     # A host's own TensorFold service is not a Strata trial even when the host declares strata_trial_roots: its claim
     # carries the TensorFold manifest as `backend` (T4.1), but that config has no `backend` field and the watch's stop
-    # rules name the Strata unit, so a bare TensorFold claim must not start the trial watch.
-    trial = serves_strata(host) and not serves_tensorfold(name, host, backend)
+    # rules name the Strata unit, so a bare TensorFold claim must not start the trial watch. A manifest that declares
+    # its own service is a trial of the same kind: it is claimed, loaded on demand, and has to be watched.
+    has_service = manifest_service(name, backend) is not None
+    trial = (serves_strata(host) or has_service) and not serves_tensorfold(name, host, backend)
     if trial and backend is not None and (not unchanged or on_host(host, ['systemctl', 'is-active', '--quiet', WATCH]).returncode):
-        start_watch(name, host, root, config)  # the trial watch is a Strata thing; Spark keeps its own resource log
-    elif serves_strata(host) and (backend is None or not trial):
+        start_watch(name, host, root, config)  # the trial watch is a claimed-backend thing; Spark keeps its own resource log
+    elif (serves_strata(host) or has_service or declared_units(name)) and (backend is None or not trial):
         on_host(host, ['sudo', '-n', 'systemctl', 'stop', WATCH])  # a trial's watch does not outlive its backend
     if unchanged and not on_host(host, ['systemctl', 'is-active', '--quiet', PROXY]).returncode:
         return
@@ -522,8 +691,8 @@ def weight_guard(name, host, backend):
 
 
 def claim(name, host, switch, idle_minutes, warm_now, backend=None, context=None, engine_options=None, by='claim'):
-    if backend is not None and not serves_strata(host):
-        raise SystemExit('--backend applies to a host that runs Strata or declares strata_trial_roots')
+    if backend is not None and not serves_strata(host) and manifest_service(name, backend) is None:
+        raise SystemExit(undeclared_backend(name, host, backend))
     if serves_tensorfold(name, host, backend):
         # A `spark_tensorfold` host's TensorFold manifest is its own backend, not a claim knob; the route target
         # declares it, so the claim and the gateway's identity comparison say the same thing (T4.1). An explicit
@@ -550,7 +719,7 @@ def claim(name, host, switch, idle_minutes, warm_now, backend=None, context=None
     claims.write(ROOT, name, recorded, context, idle_minutes, by)
     own_tensorfold = host.get('spark_tensorfold') and backend == tensorfold_backend(name)
     profile = (json.loads((ROOT / f'backends/{backend}.json').read_text())['id'] if own_tensorfold else
-               backend if serves_strata(host) else host['default_profile'])
+               backend if backend is not None else host['default_profile'])
     print(json.dumps({'claimed': name, 'profile': profile, 'context': context, 'idle_unload_minutes': idle_minutes}))
     if warm_now:
         warm(name, host)
@@ -597,9 +766,11 @@ def main():
     parser.add_argument('--route', action='store_true', help='claim: point local-coder at this host')
     parser.add_argument('--idle', type=float, help='claim: idle minutes before unload (0 = never); default inventory idle_unload_minutes')
     parser.add_argument('--no-warm', action='store_true', help='claim: do not load the model now')
-    parser.add_argument('--backend', choices=sorted(p.stem for p in (ROOT / 'backends').glob('strata-*.json')),
+    parser.add_argument('--backend',
+                        choices=sorted(stem for stem in backend_names.manifests(ROOT) if not stem.startswith('tf-')),
                         type=lambda name: backend_names.resolve_in(ROOT, name),  # a retired name still answers
-                        help='claim, Strata host: serve this manifest from the root its engine version has there')
+                        help='claim: serve this manifest where it can be served - a Strata host\'s trial root, or the '
+                             'service its own manifest declares')
     parser.add_argument('--context', type=int, help="claim with --backend: served context (default: the manifest's)")
     parser.add_argument('--engine-option', action='append', metavar='NAME=VALUE',
                         help='claim with --backend: an engine option to claim this host with, NAME as the engine spells '

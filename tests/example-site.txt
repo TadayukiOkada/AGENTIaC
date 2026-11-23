@@ -27,6 +27,7 @@ test_declared_settings
 test_doctor
 test_drift
 test_engine_catalog
+test_engine_service
 test_errors
 test_evaluation_watch
 test_evidence
