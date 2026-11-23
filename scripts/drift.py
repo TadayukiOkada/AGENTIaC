@@ -257,20 +257,25 @@ def declared_services(name):
     site has no text for is reported rather than compared: that is the declaration `ops prepare` already refuses to
     claim with, and drift is where a site sees that it is missing.
     """
-    found = []
+    found = set()
     prefix = declared.setting('resource_prefix', ROOT)
     for path in sorted((ROOT / 'backends').glob('*.json')):
         try:
             manifest = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
-        worker = (manifest.get('workers') or {}).get(name) if isinstance(manifest, dict) else None
+        if not isinstance(manifest, dict) or str(manifest.get('status', '')).startswith('retired'):
+            continue
+        worker = (manifest.get('workers') or {}).get(name)
         service = (worker or {}).get('service') if isinstance(worker, dict) else None
         unit = service.get('unit') if isinstance(service, dict) else None
         if not isinstance(unit, str) or not unit.startswith(f'{prefix}-'):
             continue
-        found.append((unit.removeprefix(f'{prefix}-'), identities.service_root(manifest, name)))
-    return sorted(found)
+        role = unit.removeprefix(f'{prefix}-')
+        if not role:
+            continue
+        found.add((role, identities.service_root(manifest, name)))
+    return sorted(found, key=lambda item: (item[0], item[1] or ''))
 
 
 def worker_units(hosts):
@@ -294,8 +299,12 @@ def worker_units(hosts):
             if not root:
                 yield 'note', f'{name} {unit}', 'the manifest declares this unit with no `root` to compare against'
                 continue
-            wanted_units.append((unit,
-                                 template(f'{role}.service', directory=root, ansible_user=declared.account(host, ROOT))))
+            try:
+                rendered = template(f'{role}.service', directory=root, ansible_user=declared.account(host, ROOT))
+            except jinja2.TemplateNotFound:
+                yield 'note', f'{name} {unit}', f'infra/templates/{role}.service.j2 is missing; not compared'
+                continue
+            wanted_units.append((unit, rendered))
         for unit, wanted in wanted_units:
             try:
                 done = borrow.on_host(host, ['cat', f'/etc/systemd/system/{unit}'], timeout=20)

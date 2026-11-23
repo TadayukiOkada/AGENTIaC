@@ -330,6 +330,17 @@ class DeclaredServiceTests(unittest.TestCase):
         self.assertEqual(storage.declared_roots('workerz', {'project_root': '/srv/agentiac'}), ([], []))
         self.assertEqual(storage.loose_weights('workerz', {'project_root': '/srv/agentiac'}), [])
 
+    def test_corrupt_and_retired_manifests_do_not_break_or_pollute_storage_reads(self):
+        (self.fixture / 'backends/broken.json').write_text('{not valid json')
+        (self.fixture / 'backends/infernix-retired.json').write_text(json.dumps({
+            'id': 'infernix-retired', 'status': 'retired 2026-11-23',
+            'model': {'directory': 'evaluations/infernix/old-weights'},
+            'workers': {'workere': {'service': {'unit': 'agentiac-infernix-old', 'port': 18090,
+                                                'root': '/srv/agentiac/evaluations/infernix/old-service'}}}}))
+        self.assertEqual(storage.loose_weights('workere', {'project_root': '/srv/agentiac'}),
+                         ['/srv/agentiac/evaluations/infernix/hc4-w4dense'])
+        self.assertEqual(storage.service_roots('workere'), ['/srv/agentiac/evaluations/infernix/service'])
+
 
 class ImageFilterTests(unittest.TestCase):
     """Which `docker images` rows are ours: this site's own prefix, not the core's default one (D6.8)."""

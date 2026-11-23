@@ -424,6 +424,30 @@ class DeclaredServiceUnitTests(unittest.TestCase):
         host = {'project_root': '/srv/agentiac', 'ansible_host': 'workerc.example'}
         self.assertEqual(list(drift.worker_units({'workerc': host})), [])
 
+    def test_duplicate_and_none_root_services_sort_and_deduplicate_without_crashing(self):
+        for stem, unit, root, status in (
+            ('infernix-a', 'agentiac-infernix-inference', '/srv/agentiac/evaluations/infernix/service', None),
+            ('infernix-b', 'agentiac-infernix-inference', '/srv/agentiac/evaluations/infernix/service', None),
+            ('infernix-noroot', 'agentiac-infernix-inference', '', None),
+            ('infernix-emptyrole', 'agentiac-', '/srv/agentiac/evaluations/infernix/other', None),
+            ('infernix-retired', 'agentiac-infernix-old', '/srv/agentiac/evaluations/infernix/old', 'retired 2026-11-23'),
+        ):
+            payload = {'id': stem, 'workers': {'workere': {'service': {'unit': unit, 'port': 18090, 'root': root}}}}
+            if status:
+                payload['status'] = status
+            (self.fixture / f'backends/{stem}.json').write_text(json.dumps(payload))
+        self.assertEqual(drift.declared_services('workere'),
+                         [('infernix-inference', None),
+                          ('infernix-inference', '/srv/agentiac/evaluations/infernix/service')])
+
+    def test_a_declared_role_with_missing_template_is_a_note(self):
+        self.manifest('agentiac-infernix-inference')
+        host = {'project_root': '/srv/agentiac', 'ansible_host': 'workere.example', 'ansible_user': 'tester'}
+        with mock.patch.object(drift.borrow, 'installed_unit_roles', return_value={'infernix-inference'}):
+            rows = list(drift.worker_units({'workere': host}))
+        self.assertEqual([row[0] for row in rows], ['note'])
+        self.assertIn('infernix-inference.service.j2 is missing', rows[0][2])
+
 
 if __name__ == '__main__':
     unittest.main()

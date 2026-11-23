@@ -113,7 +113,7 @@ def problems(ledger, nodes, backends, route):
                     found.append(f'{where}: holds something without saying whether it is full or thin (ADR 0008)')
                 if entry.get('retirement') and state == 'serving':
                     found.append(f'{where}: what serves is never a retirement candidate (§4.3)')
-                if manifest is not None:
+                if manifest is not None and state != 'quarantine':
                     want = inventory_root(facts, stem, manifest, host)
                     who = (f'backends/{stem}.json' if identities.service_root(manifest, host) else 'infra/inventory.yml')
                     if want and not path:

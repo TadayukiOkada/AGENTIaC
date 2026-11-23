@@ -677,12 +677,12 @@ def weight_guard(name, host, backend):
         # been checked against them. Making the incumbent's claim start checking 32 pinned files changes a live
         # host's behaviour, which is a batch of its own with a window of its own, not a side effect of this reading.
         return
-    pinned = upgrade.weight_entries(manifest)  # flat `files` or nested `model.files`: the same manifest, two shapes
-    if not pinned:
-        return  # a manifest that pins no weight file gives F6 nothing to check
     refusal = retire.thin_ledger(declared.load(ROOT).retention, name, backend)
     if refusal:
         raise SystemExit(refusal)
+    pinned = upgrade.weight_entries(manifest)  # flat `files` or nested `model.files`: the same manifest, two shapes
+    if not pinned:
+        return  # a manifest that pins no weight file gives F6 nothing to check
     if upgrade.strata_shaped(manifest):
         if not serves_strata(host):
             raise SystemExit(f'{backend}: a manifest that pins its weights flat is served from a root '
@@ -691,7 +691,7 @@ def weight_guard(name, host, backend):
         where = strata_root(host, backend) + '/data/models'
     else:
         directory = identities.model_directory(manifest)
-        if directory is None:
+        if not directory:
             raise SystemExit(explain(
                 f'{backend}: its manifest pins weight files and names no model directory, so this site cannot say '
                 f'where they are on {name}',

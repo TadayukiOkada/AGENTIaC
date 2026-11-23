@@ -640,6 +640,31 @@ class DeclaredServiceRootsTests(unittest.TestCase):
         self.assertEqual(retention.inventory_root(self.FACTS, 'strata-fixture', flat, 'workere'),
                          '/mnt/data/agentiac-strata-0.2.8')
 
+    def test_retired_and_unsafe_service_roots_are_ignored(self):
+        from agentiac import identities
+        retired = {**self.MANIFEST, 'status': 'retired 2026-11-23'}
+        relative = {'workers': {'workere': {'service': {'root': 'evaluations/infernix'}}}}
+        traversal = {'workers': {'workere': {'service': {'root': '/srv/../etc'}}}}
+        for bad in (retired, relative, traversal):
+            with self.subTest(bad=bad):
+                self.assertIsNone(identities.service_root(bad, 'workere'))
+        self.assertEqual(retention.host_roots({'project_root': '/srv/agentiac'}, 'workere',
+                                              [retired, relative, traversal]), [])
+
+    def test_quarantined_declared_service_under_staging_has_no_problem(self):
+        ledger = {
+            'workere': {
+                'serving': [], 'rollback': [], 'candidate': [], 'retired': [],
+                'areas': [{'path': '/srv/agentiac', 'class': 'persistent', 'reason': 'roots'}],
+                'staging': [{'path': '/srv/agentiac/retired', 'class': 'persistent', 'reason': 'staging'}],
+                'quarantine': [{'backend': 'infernix-fixture', 'path': '/srv/agentiac/retired/infernix-service',
+                                'class': 'persistent', 'form': 'full', 'reason': 'quarantined'}],
+            }
+        }
+        nodes = {'workere': {'project_root': '/srv/agentiac'}}
+        backends = {'infernix-fixture': self.MANIFEST}
+        self.assertEqual(retention.problems(ledger, nodes, backends, {'targets': {}}), [])
+
 
 if __name__ == '__main__':
     unittest.main()

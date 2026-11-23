@@ -79,7 +79,12 @@ def loose_weights(name, host):
     """
     found = []
     for path in sorted((ROOT / 'backends').glob('*.json')):
-        manifest = json.loads(path.read_text())
+        try:
+            manifest = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(manifest, dict) or str(manifest.get('status', '')).startswith('retired'):
+            continue
         directory = identities.model_directory(manifest)
         if not directory:
             continue

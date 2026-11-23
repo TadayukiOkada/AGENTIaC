@@ -151,6 +151,7 @@ class ClaimResolutionTests(Fixture):
 
     def test_a_host_that_declares_the_service_is_not_refused_by_the_strata_rule(self):
         touched = []
+        self.borrow.declared = types.SimpleNamespace(load=lambda root: types.SimpleNamespace(retention={}))
         self.borrow.on_host = lambda host, command, **kw: touched.append(command) or types.SimpleNamespace(
             returncode=0, stdout='', stderr='')  # a front already running: nothing here may change the host
         with self.assertRaises(SystemExit) as caught:
@@ -160,7 +161,8 @@ class ClaimResolutionTests(Fixture):
 
     def test_claim_succeeds_for_declared_service_without_default_profile(self):
         printed = []
-        with mock.patch.object(self.borrow, 'enable_ondemand'), \
+        with mock.patch.object(self.borrow, 'weight_guard'), \
+             mock.patch.object(self.borrow, 'enable_ondemand'), \
              mock.patch.object(self.borrow, 'start_tunnel'), \
              mock.patch.object(self.borrow, 'claims'), \
              mock.patch('builtins.print', side_effect=lambda line: printed.append(json.loads(line))):
@@ -336,6 +338,30 @@ class WeightGuardTests(Fixture):
                                                       'files': [{'path': 'model.safetensors', 'size': 9}]},
                                             'workers': {'workere': {'slots': 1}}})
         self.borrow.weight_guard('workere', self.host(spark_tensorfold=True), name)
+        self.assertEqual(self.asked, [])
+
+    def test_slash_or_traversal_model_directory_is_refused_without_touching_host(self):
+        for bad_dir in ('/', '../escape'):
+            with self.subTest(directory=bad_dir):
+                backend = self.service({'directory': bad_dir})
+                with self.assertRaises(SystemExit) as caught:
+                    self.borrow.weight_guard('workere', self.host(), backend)
+                self.assertIn('names no model directory', str(caught.exception))
+                self.assertEqual(self.asked, [])
+
+    def test_thin_ledger_refusal_runs_even_when_manifest_pins_no_files(self):
+        name = self.manifest('fixture-nothing', {
+            'id': 'fixture-nothing', 'source_version': '0.2.8',
+            'workers': {'workere': {'service': {'unit': f'{self.prefix}-infernix-inference', 'port': 18090,
+                                                'root': '/srv/agentiac/evaluations/infernix/service'}}}})
+        self.borrow.declared = types.SimpleNamespace(load=lambda root: types.SimpleNamespace(retention={
+            'workere': {'serving': [], 'rollback': [], 'candidate': [], 'quarantine': [], 'retired': [],
+                        'areas': [], 'staging': [],
+                        'candidate': [{'backend': name, 'path': '/srv/agentiac/evaluations/infernix/service',
+                                       'form': 'thin'}]}}))
+        with self.assertRaises(SystemExit) as caught:
+            self.borrow.weight_guard('workere', self.host(), name)
+        self.assertIn('form: thin', str(caught.exception))
         self.assertEqual(self.asked, [])
 
 

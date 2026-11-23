@@ -85,9 +85,13 @@ def model_directory(manifest):
     declares no directory, and its weights are read from `<root>/data/models` instead.
     """
     model = manifest.get('model') if isinstance(manifest, dict) else None
-    if not isinstance(model, dict) or not model.get('directory'):
+    raw = model.get('directory') if isinstance(model, dict) else None
+    if not isinstance(raw, str):
         return None
-    return str(model['directory']).strip('/')
+    cleaned = raw.strip('/')
+    if not cleaned or '..' in cleaned.split('/'):
+        return None
+    return cleaned
 
 
 def service_root(manifest, host_name):
@@ -99,11 +103,13 @@ def service_root(manifest, host_name):
     storage ledger, the retirement ledger, `ops storage` - where an unusable declaration is reported by the command
     that reads it.
     """
-    workers = manifest.get('workers') if isinstance(manifest, dict) else None
+    if not isinstance(manifest, dict) or str(manifest.get('status', '')).startswith('retired'):
+        return None
+    workers = manifest.get('workers')
     worker = workers.get(host_name) if isinstance(workers, dict) else None
     service = worker.get('service') if isinstance(worker, dict) else None
     root = service.get('root') if isinstance(service, dict) else None
-    if not isinstance(root, str) or not root.strip('/'):
+    if not isinstance(root, str) or not root.startswith('/') or not root.strip('/') or '..' in root.split('/'):
         return None
     return root.rstrip('/')
 
