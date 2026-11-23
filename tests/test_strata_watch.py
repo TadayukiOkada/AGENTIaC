@@ -35,3 +35,39 @@ class StrataTrialWatchTests(unittest.TestCase):
         self.assertIsNone(watch.gpu_used_mib('[N/A]\n'))
         self.assertIsNone(watch.gpu_used_mib(''))
         self.assertEqual(watch.foreign_gpu_pids('[N/A], [N/A]\n', set()), [])
+
+    def test_a_key_file_is_an_env_line_or_a_bare_value(self):
+        # a claim writes <root>/api-key-claim.env, a host's own front key is <root>/api.key with no '=' at all, and
+        # reading the second as the first raised IndexError before the first sample
+        self.assertEqual(watch.api_key('LITELLM_MASTER_KEY=sk-claim\n'), 'sk-claim')
+        self.assertEqual(watch.api_key('sk-host-key\n'), 'sk-host-key')
+        self.assertEqual(watch.api_key('KEY=sk-with-padding==\n'), 'sk-with-padding==')
+        self.assertEqual(watch.api_key('  sk-padded  \n'), 'sk-padded')
+
+    def test_docker_top_owns_a_header_and_the_container_pids_are_ours(self):
+        self.assertEqual(watch.docker_pids('PID\n101\n202\n'), {101, 202})
+        self.assertEqual(watch.docker_pids('PID\n101\n'), {101})
+        self.assertEqual(watch.docker_pids('PID\n'), set())
+        self.assertEqual(watch.docker_pids(''), set())
+
+    def test_our_container_pid_is_not_a_foreign_gpu_process(self):
+        # the bug this exists for: nvidia-smi reports the container's process, the unit cgroup does not contain it, so
+        # the watch saw our own engine on the GPU as another tenant and stopped the service it was watching
+        ours = watch.docker_pids('PID\n101\n')
+        self.assertEqual(watch.foreign_gpu_pids('101, 9000\n202, 500\n', ours), [202])
+        self.assertEqual(watch.foreign_gpu_pids('101, 9000\n', ours), [])
+
+    def test_the_container_cgroup_is_where_the_model_memory_is_measured(self):
+        default = watch.container_cgroup_paths('\t\n'.join(['3f2a' * 16, '']))
+        self.assertEqual(default[0], Path('/sys/fs/cgroup/system.slice/docker-' + '3f2a' * 16 + '.scope'))
+        moved = watch.container_cgroup_paths('abc123\tk8s.io')
+        self.assertEqual(moved[0], Path('/sys/fs/cgroup/k8s.io/docker-abc123.scope'))
+        absolute = watch.container_cgroup_paths('abc123\t/custom/cgroup')
+        self.assertEqual(absolute[0], Path('/custom/cgroup'))
+        self.assertEqual(watch.container_cgroup_paths('\tabc'), [])
+
+    def test_an_engine_answer_without_the_named_field_still_reads_as_an_answer(self):
+        self.assertEqual(watch.status_figure({'engine': {'loaded': True}}, 'engine'), ({'loaded': True}, True))
+        self.assertEqual(watch.status_figure({'status': 'ok'}, 'engine'), (None, True))
+        self.assertEqual(watch.status_figure(None, 'engine'), (None, False))
+        self.assertEqual(watch.status_figure('', 'engine'), (None, False))
