@@ -76,6 +76,44 @@ def _engine_of(manifest):
             'ggml_revision': manifest.get('ggml_revision') or None}
 
 
+def model_directory(manifest):
+    """Where a manifest that carries its model as files says they are, relative to a host's project root.
+
+    `backends/tf-1.1.4-qfn-mxfp8-nvfp4.json` declares `evaluations/spark-flash-next/nvidia-fp4local-b9ce18a6887e`
+    and Spark's TensorFold worker reads its shards from there; `ops storage` lists that same path as a weight
+    directory the host holds. A manifest that keeps its weights inside its engine root - the flat `files` shape -
+    declares no directory, and its weights are read from `<root>/data/models` instead.
+    """
+    model = manifest.get('model') if isinstance(manifest, dict) else None
+    raw = model.get('directory') if isinstance(model, dict) else None
+    if not isinstance(raw, str):
+        return None
+    cleaned = raw.strip('/')
+    if not cleaned or '..' in cleaned.split('/'):
+        return None
+    return cleaned
+
+
+def service_root(manifest, host_name):
+    """The worker directory `workers.<host>.service.root` declares for HOST_NAME, or None when it declares none.
+
+    Read as declared, not validated: whether a service block is *usable* is decided by the path that starts a claim
+    (`scripts/borrow.py`'s `service_spec`), which refuses a root that is relative, empty or contains `..`. The
+    readers of this answer only need to know which directories this checkout already names for the host - the
+    storage ledger, the retirement ledger, `ops storage` - where an unusable declaration is reported by the command
+    that reads it.
+    """
+    if not isinstance(manifest, dict) or str(manifest.get('status', '')).startswith('retired'):
+        return None
+    workers = manifest.get('workers')
+    worker = workers.get(host_name) if isinstance(workers, dict) else None
+    service = worker.get('service') if isinstance(worker, dict) else None
+    root = service.get('root') if isinstance(service, dict) else None
+    if not isinstance(root, str) or not root.startswith('/') or not root.strip('/') or '..' in root.split('/'):
+        return None
+    return root.rstrip('/')
+
+
 def compute_target(graph, target):
     """The TargetIdentity of one route target: every input read from the declared graph, nothing typed by hand.
     A retired key (naming stage 2) names its new target; names are not inputs of the identity."""

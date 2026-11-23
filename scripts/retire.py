@@ -172,7 +172,7 @@ def serving_root(ledger_host, facts, graph, host):
             return entry['path']
     backend = facts.get('strata_default_backend') or facts.get('strata_backend')
     if backend and backend in graph.backends:
-        return retention.inventory_root(facts, backend, graph.backends[backend])
+        return retention.inventory_root(facts, backend, graph.backends[backend], host)
     return None
 
 
@@ -223,7 +223,7 @@ def plan(host, handle, stage, graph):
                                      f'infra/retention.yml names no line for {handle} on {host}. The lines there '
                                      f'are: {", ".join(named) or "none"}')]
         return out
-    out['roots'] = retention.host_roots(facts)
+    out['roots'] = retention.host_roots(facts, host, list(graph.backends.values()))
     out['staging'] = [line['path'] for line in ledger_host['staging'] if 'path' in line]
     out['serving_root'] = serving_root(ledger_host, facts, graph, host)
 

@@ -20,6 +20,7 @@ import concurrent.futures
 import datetime
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -29,7 +30,7 @@ from agentiac import paths  # noqa: E402
 ROOT = paths.root()
 sys.path.insert(0, str(CODE / 'scripts'))
 import borrow  # noqa: E402
-from agentiac import declared, retention  # noqa: E402
+from agentiac import declared, identities, retention  # noqa: E402
 from agentiac.errors import command as cli_name  # noqa: E402
 
 FLOOR_GIB = 40       # what the owner keeps free at all times (strata-128k-plan.md)
@@ -73,17 +74,43 @@ def loose_weights(name, host):
     and keep their weights inside the root, while `backends/tf-1.1.4-qfn-mxfp8-nvfp4.json` pins 32 files under the
     project root and `agentiac-spark-tensorfold.service`'s worker reads them from there. The declaration is
     the measurement's boundary here too - a checkpoint no manifest names stays a leftover to be found, not a
-    held generation.
+    held generation. `scripts/borrow.py`'s F6 guard reads the same declaration, so what this lists and what a
+    claim refuses to start without cannot drift apart.
     """
     found = []
     for path in sorted((ROOT / 'backends').glob('*.json')):
-        manifest = json.loads(path.read_text())
-        model = manifest.get('model') if isinstance(manifest, dict) else None
-        if not isinstance(model, dict) or not model.get('directory'):
+        try:
+            manifest = json.loads(path.read_text())
+        except (OSError, ValueError):
             continue
-        if name not in manifest.get('workers', {}):
+        if not isinstance(manifest, dict) or str(manifest.get('status', '')).startswith('retired'):
             continue
-        found.append(host['project_root'].rstrip('/') + '/' + model['directory'].strip('/'))
+        directory = identities.model_directory(manifest)
+        if not directory:
+            continue
+        if name not in (manifest.get('workers') or {}):
+            continue
+        found.append(host['project_root'].rstrip('/') + '/' + directory)
+    return sorted(set(found))
+
+
+def service_roots(name):
+    """The worker roots the manifests declare for host NAME (`workers.<host>.service.root`).
+
+    An engine that serves from a container has no `strata_trial_roots` entry and no `spark_tensorfold` flag, so its
+    own manifest is the only declaration that says which directory of that host is ours. Without reading it here,
+    the root it prepares into is invisible to `ops storage` and looks like a leftover - which is what §3.4 says
+    should be found by hand, not deleted by a command that never saw it declared.
+    """
+    found = []
+    for path in sorted((ROOT / 'backends').glob('*.json')):
+        try:
+            manifest = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        root = identities.service_root(manifest, name)
+        if root:
+            found.append(root)
     return sorted(set(found))
 
 
@@ -98,24 +125,39 @@ def declared_roots(name, host):
         parents |= {str(Path(path).parent) for path in paths}
     if host.get('spark_tensorfold'):
         paths.append(borrow.tensorfold_root(host))
+    for root in service_roots(name):  # an engine that declares its own service root: declared, ours, measurable
+        if root not in paths:
+            paths.append(root)
     # A weights parent is deliberately not added to `parents`: that scan decides what looks like ours, and the
-    # directory a TensorFold checkpoint sits in is the owner's evaluation tree (§3.4).
+    # directory a TensorFold checkpoint sits in is the owner's evaluation tree (§3.4). A declared service root
+    # lives in that same tree, so it is measured as itself and its neighbours are not claimed by the scan.
     paths.extend(path for path in loose_weights(name, host) if path not in paths)
     return paths, sorted(parents)
+
+
+def image_pattern():
+    """Which `docker images` rows are ours: what this site's resource prefix names, and the NGC base images its
+    recipes pin (D6.8: a deployed image is `<resource_prefix>-<role>:...`, so the prefix is the general rule).
+
+    This was written as `agentiac`, the core's default prefix. This installation deploys as `agent-infra`, so the
+    TensorFold image its own manifest pins - `agent-infra-tensorfold:flash-next-v114-20e15e4` - was filtered out of
+    its own storage reading, and the image of any engine declared later would be missed the same way.
+    """
+    return '^(' + re.escape(declared.setting('resource_prefix', ROOT)) + '|nvcr\\.io/nvidia/pytorch)'
 
 
 def measure(host, paths, parents, wants_images=True):
     """One read-only pass on the host: the declared paths, their parents, our images and the build cache.
 
     The image reading is asked of every node so an image the checkout has stopped naming is still seen. The
-    pattern selects only what is ours (`agentiac*` and the NGC PyTorch base image): unrelated host images are
-    not ours to name.
+    pattern selects only what is ours (what this site's resource prefix names, and the NGC PyTorch base image):
+    unrelated host images are not ours to name.
     """
     script = MEASURE % {
         'roots': ' '.join(f'"{path}"' for path in paths) or '"/nonexistent"',
         'parents': ' '.join(f'"{path}"' for path in parents) or '"/nonexistent"',
         'images': ("docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' 2>/dev/null | "
-                   "grep -E '^(agentiac|nvcr\\.io/nvidia/pytorch)' | while read -r tag size; do "
+                   f"grep -E '{image_pattern()}' | while read -r tag size; do "
                    "printf 'IMAGE\\t%s\\t%s\\n' \"$tag\" \"$size\"; done") if wants_images else '',
         # `docker system df` prints `Build Cache  608  0  83.33GB  60.17GB`: the name is two words, so the size is
         # field 5 and what Docker could reclaim is field 6 (the Images and Containers lines are one word each).

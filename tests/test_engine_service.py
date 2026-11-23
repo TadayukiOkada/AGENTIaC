@@ -151,6 +151,7 @@ class ClaimResolutionTests(Fixture):
 
     def test_a_host_that_declares_the_service_is_not_refused_by_the_strata_rule(self):
         touched = []
+        self.borrow.declared = types.SimpleNamespace(load=lambda root: types.SimpleNamespace(retention={}))
         self.borrow.on_host = lambda host, command, **kw: touched.append(command) or types.SimpleNamespace(
             returncode=0, stdout='', stderr='')  # a front already running: nothing here may change the host
         with self.assertRaises(SystemExit) as caught:
@@ -160,7 +161,8 @@ class ClaimResolutionTests(Fixture):
 
     def test_claim_succeeds_for_declared_service_without_default_profile(self):
         printed = []
-        with mock.patch.object(self.borrow, 'enable_ondemand'), \
+        with mock.patch.object(self.borrow, 'weight_guard'), \
+             mock.patch.object(self.borrow, 'enable_ondemand'), \
              mock.patch.object(self.borrow, 'start_tunnel'), \
              mock.patch.object(self.borrow, 'claims'), \
              mock.patch('builtins.print', side_effect=lambda line: printed.append(json.loads(line))):
@@ -252,6 +254,115 @@ class WatchInvocationTests(Fixture):
              mock.patch.object(self.borrow, 'put', return_value=0):
             self.borrow.enable_ondemand('workere', host, 15, backend=tf_name)
         self.assertIn(['sudo', '-n', 'systemctl', 'stop', self.borrow.WATCH], commands)
+
+
+class WeightGuardTests(Fixture):
+    """F6 on the declared way: the manifest says where its weights are, so the guard can look there (T5.3)."""
+
+    def setUp(self):
+        super().setUp()
+        # The ledger half of the guard reads the whole declaration graph; these tests give it an empty one, which is
+        # what a host with no `infra/retention.yml` line for the backend answers, and keep the measured half real.
+        self.borrow.declared = types.SimpleNamespace(load=lambda root: types.SimpleNamespace(retention={}))
+        self.asked = []
+        self.answers = types.SimpleNamespace(returncode=0, stdout='', stderr='')
+        self.borrow.on_host = lambda host, command, **kw: self.asked.append(command) or self.answers
+
+    def service(self, model):
+        return self.manifest('infernix-fixture', {
+            'id': 'infernix-fixture',
+            'engine': {'repository': 'https://github.com/example/Infernix-dgx-spark-gb10.git',
+                       'version': '1.0.0.dev-fc913e30'},
+            'model': {'repository': 'example/Qwen3.8-Flash-Next-NVIDIA-FP4-Local-Infernix-HC4-W4Dense',
+                      'files': [{'path': 'model-00001-of-00003.safetensors', 'size': 7, 'sha256': 'a' * 64},
+                                {'path': 'ngram.bin', 'size': 5}], **model},
+            'workers': {'workere': {'service': {'unit': f'{self.prefix}-infernix-inference', 'port': 18090,
+                                                'root': '/srv/agentiac/evaluations/infernix/service'}}}})
+
+    def test_the_guard_looks_where_the_manifest_says_its_model_is(self):
+        backend = self.service({'directory': 'evaluations/infernix/hc4-w4dense'})
+        self.answers.stdout = '\n'.join(
+            f"present /srv/agentiac/evaluations/infernix/hc4-w4dense/{name}" for name in
+            ('model-00001-of-00003.safetensors', 'ngram.bin'))
+        self.borrow.weight_guard('workere', self.host(), backend)
+        asked = self.asked[0]
+        self.assertEqual(asked[0], 'bash')
+        self.assertIn('/srv/agentiac/evaluations/infernix/hc4-w4dense/model-00001-of-00003.safetensors', asked)
+        self.assertIn('7', asked)  # the size the manifest pins is what the host is asked about
+
+    def test_a_service_manifest_that_names_no_directory_is_refused_before_the_host_is_asked(self):
+        backend = self.service({})   # pins two weight files and says nothing about where they are
+        with self.assertRaises(SystemExit) as caught:
+            self.borrow.weight_guard('workere', self.host(), backend)
+        message = str(caught.exception)
+        self.assertIn('names no model directory', message)
+        self.assertIn('ops prepare workere --backend infernix-fixture --check', message)
+        self.assertEqual(self.asked, [])
+
+    def test_a_weight_that_is_not_there_refuses_the_claim_naming_where_it_looked(self):
+        backend = self.service({'directory': 'evaluations/infernix/hc4-w4dense'})
+        self.answers.stdout = ('present /srv/agentiac/evaluations/infernix/hc4-w4dense/model-00001-of-00003.safetensors\n'
+                               'missing /srv/agentiac/evaluations/infernix/hc4-w4dense/ngram.bin')
+        with self.assertRaises(SystemExit) as caught:
+            self.borrow.weight_guard('workere', self.host(), backend)
+        message = str(caught.exception)
+        self.assertIn('not in /srv/agentiac/evaluations/infernix/hc4-w4dense', message)
+        self.assertIn('ngram.bin (5 B)', message)
+
+    def test_a_flat_manifest_on_a_host_with_no_trial_root_is_refused_rather_than_checked_nowhere(self):
+        name = self.manifest('fixture-flat', {'id': 'fixture-flat', 'source_version': '0.2.8',
+                                              'files': [{'path': 'weights.gguf', 'size': 3}],
+                                              'workers': {'workere': {'service': {
+                                                  'unit': f'{self.prefix}-infernix-inference', 'port': 18090,
+                                                  'root': '/srv/agentiac/evaluations/infernix/service'}}}})
+        with self.assertRaises(SystemExit) as caught:
+            self.borrow.weight_guard('workere', self.host(), name)
+        self.assertIn('strata_trial_roots', str(caught.exception))
+        self.assertEqual(self.asked, [])
+
+    def test_a_manifest_that_pins_nothing_is_not_a_reason_to_read_the_host(self):
+        name = self.manifest('fixture-nothing', {'id': 'fixture-nothing', 'source_version': '0.2.8',
+                                                'workers': {'workere': {'service': {
+                                                    'unit': f'{self.prefix}-infernix-inference', 'port': 18090,
+                                                    'root': '/srv/agentiac/evaluations/infernix/service'}}}})
+        self.borrow.weight_guard('workere', self.host(), name)
+        self.assertEqual(self.asked, [])
+
+    def test_the_spark_tensorfold_claim_is_left_as_it_is_today(self):
+        # Spark serves its TensorFold manifest as its own backend; making that claim start checking 32 pinned files
+        # is a change to a live host, recorded in the plan as its own batch. This test is the fence.
+        name = self.manifest('tf-fixture', {'id': 'tf-fixture',
+                                            'engine': {'repository': 'https://github.com/example/TensorFold.git',
+                                                       'version': '1.1.4'},
+                                            'model': {'repository': 'example/Model', 'directory': 'evaluations/x',
+                                                      'files': [{'path': 'model.safetensors', 'size': 9}]},
+                                            'workers': {'workere': {'slots': 1}}})
+        self.borrow.weight_guard('workere', self.host(spark_tensorfold=True), name)
+        self.assertEqual(self.asked, [])
+
+    def test_slash_or_traversal_model_directory_is_refused_without_touching_host(self):
+        for bad_dir in ('/', '../escape'):
+            with self.subTest(directory=bad_dir):
+                backend = self.service({'directory': bad_dir})
+                with self.assertRaises(SystemExit) as caught:
+                    self.borrow.weight_guard('workere', self.host(), backend)
+                self.assertIn('names no model directory', str(caught.exception))
+                self.assertEqual(self.asked, [])
+
+    def test_thin_ledger_refusal_runs_even_when_manifest_pins_no_files(self):
+        name = self.manifest('fixture-nothing', {
+            'id': 'fixture-nothing', 'source_version': '0.2.8',
+            'workers': {'workere': {'service': {'unit': f'{self.prefix}-infernix-inference', 'port': 18090,
+                                                'root': '/srv/agentiac/evaluations/infernix/service'}}}})
+        self.borrow.declared = types.SimpleNamespace(load=lambda root: types.SimpleNamespace(retention={
+            'workere': {'serving': [], 'rollback': [], 'candidate': [], 'quarantine': [], 'retired': [],
+                        'areas': [], 'staging': [],
+                        'candidate': [{'backend': name, 'path': '/srv/agentiac/evaluations/infernix/service',
+                                       'form': 'thin'}]}}))
+        with self.assertRaises(SystemExit) as caught:
+            self.borrow.weight_guard('workere', self.host(), name)
+        self.assertIn('form: thin', str(caught.exception))
+        self.assertEqual(self.asked, [])
 
 
 if __name__ == '__main__':

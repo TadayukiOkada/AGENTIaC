@@ -27,6 +27,7 @@ sys.path.insert(0, str(CODE / 'scripts'))
 import borrow  # noqa: E402
 from agentiac import claims  # noqa: E402
 from agentiac import declared  # noqa: E402
+from agentiac import identities  # noqa: E402
 import evalimage  # noqa: E402
 import route  # noqa: E402
 import storage  # noqa: E402
@@ -248,26 +249,71 @@ def front_directory(host):
     return host['project_root'] + '/ondemand'
 
 
+def declared_services(name):
+    """Every unit a manifest declares for host NAME, as (role, root): an engine that says how it is served.
+
+    `infra/unit.yml` installs such a unit and `scripts/borrow.py` starts and stops it, so it is a permanent unit of
+    ours like the TensorFold service, and its text has to agree with this checkout like every other one. A role the
+    site has no text for is reported rather than compared: that is the declaration `ops prepare` already refuses to
+    claim with, and drift is where a site sees that it is missing.
+    """
+    found = set()
+    prefix = declared.setting('resource_prefix', ROOT)
+    for path in sorted((ROOT / 'backends').glob('*.json')):
+        try:
+            manifest = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(manifest, dict) or str(manifest.get('status', '')).startswith('retired'):
+            continue
+        worker = (manifest.get('workers') or {}).get(name)
+        service = (worker or {}).get('service') if isinstance(worker, dict) else None
+        unit = service.get('unit') if isinstance(service, dict) else None
+        if not isinstance(unit, str) or not unit.startswith(f'{prefix}-'):
+            continue
+        role = unit.removeprefix(f'{prefix}-')
+        if not role:
+            continue
+        found.add((role, identities.service_root(manifest, name)))
+    return sorted(found, key=lambda item: (item[0], item[1] or ''))
+
+
 def worker_units(hosts):
     """Permanent units on workers. Transient ones have no file to compare."""
     for name, host in hosts.items():
+        wanted_units = []
         if host.get('ondemand_persistent'):
-            unit, wanted = declared.resource('ondemand.service', ROOT), template('ondemand.service', directory=front_directory(host),
-                                                                    ansible_user=declared.account(host, ROOT))
+            wanted_units.append((declared.resource('ondemand.service', ROOT),
+                                 template('ondemand.service', directory=front_directory(host),
+                                          ansible_user=declared.account(host, ROOT))))
         elif host.get('spark_tensorfold'):
-            unit, wanted = (declared.resource('spark-tensorfold.service', ROOT),
-                            template('spark-tensorfold.service', directory=borrow.tensorfold_root(host),
-                                     ansible_user=declared.account(host, ROOT)))
-        else:
-            continue
-        try:
-            done = borrow.on_host(host, ['cat', f'/etc/systemd/system/{unit}'], timeout=20)
-        except (OSError, subprocess.TimeoutExpired):
-            done = None
-        if done is None or done.returncode == 255:
-            yield 'note', f'{name} {unit}', 'host not reachable; not compared'
-        else:
-            yield compare(f'{name} {unit}', wanted, done.stdout if done.returncode == 0 else None)
+            wanted_units.append((declared.resource('spark-tensorfold.service', ROOT),
+                                 template('spark-tensorfold.service', directory=borrow.tensorfold_root(host),
+                                          ansible_user=declared.account(host, ROOT))))
+        for role, root in declared_services(name):
+            unit = declared.resource(f'{role}.service', ROOT)
+            if role not in borrow.installed_unit_roles():
+                yield 'note', f'{name} {unit}', \
+                    'a manifest declares this service and infra/unit.yml has no role to install it'
+                continue
+            if not root:
+                yield 'note', f'{name} {unit}', 'the manifest declares this unit with no `root` to compare against'
+                continue
+            try:
+                rendered = template(f'{role}.service', directory=root, ansible_user=declared.account(host, ROOT))
+            except jinja2.TemplateNotFound:
+                yield 'note', f'{name} {unit}', f'infra/templates/{role}.service.j2 is missing; not compared'
+                continue
+            wanted_units.append((unit, rendered))
+        for unit, wanted in wanted_units:
+            try:
+                done = borrow.on_host(host, ['cat', f'/etc/systemd/system/{unit}'], timeout=20)
+            except (OSError, subprocess.TimeoutExpired):
+                done = None
+            if done is None or done.returncode == 255:
+                yield 'note', f'{name} {unit}', 'host not reachable; not compared'
+            else:
+                yield compare(f'{name} {unit}', wanted, done.stdout if done.returncode == 0 else None)
 
 
 def sections(hosts):

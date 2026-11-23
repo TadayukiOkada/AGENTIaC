@@ -375,5 +375,79 @@ class JsonContractTests(unittest.TestCase):
         self.assertIn('no inventory', err)
 
 
+class DeclaredServiceUnitTests(unittest.TestCase):
+    """A manifest that declares its service installs a unit of ours through `infra/unit.yml`, so drift has to say
+    something about it: compare it, or name the site file that would let it."""
+
+    def setUp(self):
+        import tempfile
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.fixture = Path(directory.name)
+        (self.fixture / 'backends').mkdir()
+        (self.fixture / 'infra').mkdir()
+        (self.fixture / 'infra/inventory.yml').write_text(
+            "all:\n  vars:\n    resource_prefix: agentiac\n  children:\n    workers:\n      hosts:\n        workere: {}\n")
+        previous = drift.ROOT
+        drift.ROOT = self.fixture
+        self.addCleanup(setattr, drift, 'ROOT', previous)
+
+    def manifest(self, unit, root='/srv/agentiac/evaluations/infernix/service'):
+        (self.fixture / 'backends/infernix-fixture.json').write_text(json.dumps({
+            'id': 'infernix-fixture',
+            'engine': {'repository': 'https://example.invalid/Infernix-dgx-spark-gb10.git', 'version': '1.0.0'},
+            'workers': {'workere': {'service': {'unit': unit, 'port': 18090, 'root': root}}}}))
+
+    def test_the_service_a_manifest_declares_is_a_unit_drift_knows_about(self):
+        self.manifest('agentiac-infernix-inference')
+        self.assertEqual(drift.declared_services('workere'),
+                         [('infernix-inference', '/srv/agentiac/evaluations/infernix/service')])
+
+    def test_a_service_with_no_unit_text_is_a_note_and_not_a_crash(self):
+        self.manifest('agentiac-infernix-inference')
+        host = {'project_root': '/srv/agentiac', 'ansible_host': 'workere.example'}
+        rows = list(drift.worker_units({'workere': host}))
+        self.assertEqual([row[0] for row in rows], ['note'])
+        self.assertEqual(rows[0][1], 'workere agentiac-infernix-inference.service')
+        self.assertIn('infra/unit.yml', rows[0][2])
+
+    def test_a_declared_unit_with_no_root_is_reported_not_rendered(self):
+        self.manifest('agentiac-infernix-inference', root='')
+        host = {'project_root': '/srv/agentiac', 'ansible_host': 'workere.example'}
+        with mock.patch.object(drift.borrow, 'installed_unit_roles', return_value={'infernix-inference'}):
+            rows = list(drift.worker_units({'workere': host}))
+        self.assertEqual([row[0] for row in rows], ['note'])
+        self.assertIn('no `root`', rows[0][2])
+
+    def test_a_host_no_manifest_names_still_answers_nothing_about_it(self):
+        self.manifest('agentiac-infernix-inference')
+        host = {'project_root': '/srv/agentiac', 'ansible_host': 'workerc.example'}
+        self.assertEqual(list(drift.worker_units({'workerc': host})), [])
+
+    def test_duplicate_and_none_root_services_sort_and_deduplicate_without_crashing(self):
+        for stem, unit, root, status in (
+            ('infernix-a', 'agentiac-infernix-inference', '/srv/agentiac/evaluations/infernix/service', None),
+            ('infernix-b', 'agentiac-infernix-inference', '/srv/agentiac/evaluations/infernix/service', None),
+            ('infernix-noroot', 'agentiac-infernix-inference', '', None),
+            ('infernix-emptyrole', 'agentiac-', '/srv/agentiac/evaluations/infernix/other', None),
+            ('infernix-retired', 'agentiac-infernix-old', '/srv/agentiac/evaluations/infernix/old', 'retired 2026-11-23'),
+        ):
+            payload = {'id': stem, 'workers': {'workere': {'service': {'unit': unit, 'port': 18090, 'root': root}}}}
+            if status:
+                payload['status'] = status
+            (self.fixture / f'backends/{stem}.json').write_text(json.dumps(payload))
+        self.assertEqual(drift.declared_services('workere'),
+                         [('infernix-inference', None),
+                          ('infernix-inference', '/srv/agentiac/evaluations/infernix/service')])
+
+    def test_a_declared_role_with_missing_template_is_a_note(self):
+        self.manifest('agentiac-infernix-inference')
+        host = {'project_root': '/srv/agentiac', 'ansible_host': 'workere.example', 'ansible_user': 'tester'}
+        with mock.patch.object(drift.borrow, 'installed_unit_roles', return_value={'infernix-inference'}):
+            rows = list(drift.worker_units({'workere': host}))
+        self.assertEqual([row[0] for row in rows], ['note'])
+        self.assertIn('infernix-inference.service.j2 is missing', rows[0][2])
+
+
 if __name__ == '__main__':
     unittest.main()
