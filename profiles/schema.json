@@ -132,7 +132,8 @@
         },
         "decided_by": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "decided_at": {
           "type": "string",
@@ -140,7 +141,8 @@
         },
         "note": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         }
       }
     }
