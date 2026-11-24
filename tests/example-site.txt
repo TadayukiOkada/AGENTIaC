@@ -26,6 +26,7 @@ test_dashboard_operations
 test_declared
 test_declared_settings
 test_doctor
+test_download_model
 test_drift
 test_engine_catalog
 test_engine_service
