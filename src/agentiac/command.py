@@ -53,10 +53,10 @@ def gateway_aliases():
 
 
 def code_aliases():
-    """What scripts/agent.py accepts: pi models, local-coder and its variants, the router."""
+    """Aliases accepted by scripts/agent.py, including the local-any worker pool and router."""
     local = routes()
     names = [name for name in route_aliases.api_targets(local, local['default']) if name != local['alias']]
-    return [local['alias'], 'router'] + [m['id'] for m in pi_models()] + names
+    return [local['alias'], 'local-any', 'router'] + [m['id'] for m in pi_models()] + names
 
 
 def legacy_names(local=None):
@@ -1070,7 +1070,8 @@ def build_parser(former=True):
                                    'pi arguments go after --.')
     p.add_argument('repo', nargs='?', default='.', help='git repository (default: this directory)')
     offer_node_first(p.add_argument('-m', '--model', default='local-coder', choices=code_aliases(), metavar='ALIAS',
-                   help=f'alias (default local-coder; router = rule-based escalation; see {cli_name()} models)'))
+                   help=f'alias (default local-coder, local-any picks the least busy worker, '
+                        f'router uses rule-based escalation, see {cli_name()} models)'))
     p.add_argument('-p', '--prompt', help='run this one prompt and exit (pi print mode)')
     p.add_argument('--allow-cloud', action='store_true', help='router: escalate without asking (allowed repositories only)')
     p.add_argument('--in-place', action='store_true', help='edit REPO directly instead of a new worktree')

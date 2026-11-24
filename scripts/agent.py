@@ -5,11 +5,14 @@ The worktree gets its own branch (agent/<timestamp>) so the user's checkout and
 uncommitted changes are never touched; review and merge the branch yourself.
 pi state (models.json, sessions) lives in artifacts/agents/pi-daily, separate
 from any personal pi configuration.
+The local-any alias selects a worker once per launch, including on resume.
+When resume picks a different worker, the old node's prefix cache is not reused.
 """
 import argparse
 import datetime
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -27,6 +30,8 @@ from agentiac.errors import command as cli_name  # noqa: E402
 
 STATE = ROOT / 'artifacts/agents/pi-daily'
 WORKTREES = Path.home() / 'agent-worktrees'
+# local-any's default pool: the tracked pi models named <node>-worker (one fixed node each), in declaration order.
+LOCAL_POOL_PATTERN = re.compile(r'[a-z0-9]+-worker')
 
 THINKING = ['off', 'minimal', 'low', 'medium', 'high']
 COMPACTION_GUARD = EXTENSIONS / 'compaction-guard.ts'
@@ -96,6 +101,83 @@ def target(alias):
     return (selected, routes['targets'][selected]) if selected is not None else None
 
 
+def local_pool(tracked_models):
+    """The ordered local-any pool: AGENTIAC_LOCAL_POOL (each a tracked model id), else the <node>-worker models."""
+    override = os.environ.get('AGENTIAC_LOCAL_POOL')
+    if override is None:
+        pool = tuple(alias for alias in tracked_models if LOCAL_POOL_PATTERN.fullmatch(alias))
+        if not pool:
+            raise SystemExit('local-any: no tracked local-infra model is named <node>-worker; '
+                             'declare one in agents/pi/models.json or set AGENTIAC_LOCAL_POOL')
+        return pool
+    pool = tuple(alias.strip() for alias in override.split(','))
+    for alias in pool:
+        if alias not in tracked_models:
+            raise SystemExit(f'AGENTIAC_LOCAL_POOL: {alias!r} is not a tracked local-infra model id')
+    return pool
+
+
+def session_env(pid, raw):
+    """The launch environment of PID when PID is a pi session itself, else None.
+
+    pi rewrites its process title, so its command line cannot be read; its environment can. Children
+    of a session (pi's bash tool) inherit the markers but not the PID agent.py recorded before execve.
+    """
+    env = dict(entry.split('=', 1) for entry in os.fsdecode(raw).split('\0') if '=' in entry)
+    return env if env.get('AGENTIAC_PI_PID') == pid else None
+
+
+def process_envs():
+    """Yield the environments of running pi sessions (readable Linux processes), excluding this launcher."""
+    own_pid = str(os.getpid())
+    for environ in Path('/proc').glob('[0-9]*/environ'):
+        pid = environ.parent.name
+        if pid == own_pid:
+            continue
+        try:
+            raw = environ.read_bytes()
+        except OSError:
+            continue
+        env = session_env(pid, raw) if raw else None
+        if env is not None:
+            yield env
+
+
+def count_local_sessions(envs, pool, local_coder=None):
+    """Count daily pi sessions by pool alias from their launch environments."""
+    counts = dict.fromkeys(pool, 0)
+    routed_aliases = []
+    if local_coder:
+        node = local_coder.get('node')
+        source = local_coder.get('source_alias')
+        routed_aliases = [alias for alias in counts if alias == source or
+                          (node and (alias == f'{node}-worker' or alias.startswith(f'{node}-worker-')))]
+
+    for env in envs:
+        alias = env.get('AGENTIAC_PI_MODEL')
+        if env.get('PI_CODING_AGENT_DIR') != str(STATE) or not alias:
+            continue
+        if alias == 'local-coder':
+            for worker in routed_aliases:
+                counts[worker] += 1
+        elif alias in counts:
+            counts[alias] += 1
+    return counts
+
+
+def pick_local_alias(tracked_models):
+    pool = local_pool(tracked_models)
+    try:
+        resolved = target('local-coder')
+    except (OSError, ValueError, KeyError, TypeError):
+        resolved = None
+    counts = count_local_sessions(process_envs(), pool, resolved[1] if resolved else None)
+    alias = min(pool, key=counts.__getitem__)
+    sessions = ', '.join(f'{worker}={count}' for worker, count in counts.items())
+    print(f'local-any: picked {alias} (sessions: {sessions})', file=sys.stderr)
+    return alias
+
+
 def model_entry(alias, thinking=False):
     """pi model metadata for ALIAS; local-coder follows the currently rendered target.
 
@@ -118,14 +200,16 @@ def model_entry(alias, thinking=False):
     raise SystemExit(f'unknown alias {alias!r}')
 
 
-def single_model(alias, thinking):
+def single_model(alias, thinking, tracked_model=None):
     """(pi model entry, pi model arguments, banner) for one alias at the starting THINKING level (None: default)."""
-    model = model_entry(alias, thinking=True)
+    model = model_entry(alias, thinking=True) if tracked_model is None else tracked_model
     if thinking not in (None, 'off') and not model.get('reasoning'):
         raise SystemExit(f"{model['name']} has no thinking switch (local-coder targets: 'thinking' in "
                          'gateway/local-coder.json); omit --thinking or pick another model')
     # A local-coder target with a switch starts at its 'thinking_start' (default off); tracked models keep pi's default.
-    start = thinking or (target(alias)[1].get('thinking_start', 'off') if 'compat' in model else None)
+    start = thinking
+    if start is None and tracked_model is None and 'compat' in model:
+        start = target(alias)[1].get('thinking_start', 'off')
     model_args = ['--provider', 'local-infra', '--model', alias] + (['--thinking', start] if start else [])
     banner = f"{model['name']}, context {model['contextWindow']}, max {model['maxTokens']} tokens"
     if start and model.get('reasoning'):
@@ -187,7 +271,9 @@ def code_key_name(alias, cloud_allowed):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--repo', type=Path, required=True)
-    parser.add_argument('--alias', default='local-coder', help="gateway alias, or 'router' for agents/pi/extensions/router.ts")
+    parser.add_argument('--alias', default='local-coder',
+                        help='gateway alias (default local-coder), local-any for the least busy worker, '
+                             'or router for rule-based escalation')
     parser.add_argument('--allow-cloud', action='store_true',
                         help='router: escalate to the cloud model without asking (repository must be in agents/pi/router.json)')
     parser.add_argument('--in-place', action='store_true', help='work in REPO directly instead of a new worktree')
@@ -204,9 +290,14 @@ def main():
     resumed = latest_session(STATE) if args.resume else None
     top = toplevel(resumed[1] if resumed else args.repo.resolve())
     config = json.loads((ROOT / 'agents/pi/models.json').read_text())
+    tracked_model = None
+    if args.alias == 'local-any':
+        tracked_models = {model['id']: model for model in config['providers']['local-infra']['models']}
+        args.alias = pick_local_alias(tracked_models)
+        tracked_model = tracked_models[args.alias]
     env = {name: value for name, value in os.environ.items()
            if name not in ('LITELLM_MASTER_KEY', 'LITELLM_TASK_KEY', 'LITELLM_CODE_CLOUD_KEY', 'LITELLM_CODE_KEY')}
-    env.update(PI_CODING_AGENT_DIR=str(STATE), PI_OFFLINE='1',
+    env.update(PI_CODING_AGENT_DIR=str(STATE), PI_OFFLINE='1', AGENTIAC_PI_MODEL=args.alias, AGENTIAC_PI_PID=str(os.getpid()),
                PATH=str(NODE.parent) + os.pathsep + os.environ.get('PATH', '/usr/bin:/bin'))
     cloud_allowed = False
     if args.alias == 'router':
@@ -221,7 +312,7 @@ def main():
         cloud = ('without asking' if args.allow_cloud else 'after confirmation') if router['cloudAllowed'] else 'not allowed here'
         banner = f"router: {router['low']}, hard tasks -> {router['high']} ({cloud})"
     else:
-        model, model_args, banner = single_model(args.alias, args.thinking)
+        model, model_args, banner = single_model(args.alias, args.thinking, tracked_model)
         config['providers']['local-infra']['models'] = [model]
     try:
         env['LITELLM_CODE_KEY'] = read_key(ROOT / 'secrets/gateway.env', code_key_name(args.alias, cloud_allowed))

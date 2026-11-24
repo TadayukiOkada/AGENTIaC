@@ -1,6 +1,7 @@
 """Local-coder rendering, borrowed-host release report, claims, and smoke stream parsing."""
 import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -269,6 +270,115 @@ class SyntheticSiteMixin:
         for p in patchers:
             p.start()
             self.addCleanup(p.stop)
+
+
+class LocalAnyTests(unittest.TestCase):
+    MODELS = ('orin1-worker', 'orin2-worker', 'another-worker')
+
+    @staticmethod
+    def pi_env(alias):
+        return {'PI_CODING_AGENT_DIR': str(agent.STATE), 'AGENTIAC_PI_MODEL': alias}
+
+    def test_reads_proc_environments_and_skips_inaccessible_processes(self):
+        own, unreadable, vanished, pi = (
+            SimpleNamespace(parent=SimpleNamespace(name=pid), read_bytes=mock.Mock())
+            for pid in ('100', '101', '102', '103')
+        )
+        unreadable.read_bytes.side_effect = PermissionError
+        vanished.read_bytes.side_effect = FileNotFoundError
+        pi.read_bytes.return_value = b'AGENTIAC_PI_MODEL=orin1-worker\0AGENTIAC_PI_PID=103\0OTHER=a=b\0malformed\0'
+        # a child of a session (pi's bash tool) inherits the markers but not the recorded PID
+        child = SimpleNamespace(parent=SimpleNamespace(name='104'), read_bytes=mock.Mock(
+            return_value=b'AGENTIAC_PI_MODEL=orin1-worker\0AGENTIAC_PI_PID=103\0'))
+        with mock.patch.object(Path, 'glob', return_value=[own, unreadable, vanished, pi, child]) as glob, \
+                mock.patch.object(os, 'getpid', return_value=100):
+            self.assertEqual(list(agent.process_envs()),
+                             [{'AGENTIAC_PI_MODEL': 'orin1-worker', 'AGENTIAC_PI_PID': '103', 'OTHER': 'a=b'}])
+        glob.assert_called_once_with('[0-9]*/environ')
+        own.read_bytes.assert_not_called()
+
+    def test_counts_only_local_pi_sessions_and_maps_local_coder_by_node(self):
+        envs = [
+            self.pi_env('orin1-worker'),
+            self.pi_env('orin1-worker'),
+            self.pi_env('local-coder'),
+            self.pi_env('another-worker'),
+            {**self.pi_env('orin2-worker'), 'PI_CODING_AGENT_DIR': str(agent.STATE.with_name('other'))},
+            {'PI_CODING_AGENT_DIR': str(agent.STATE)},
+            {'AGENTIAC_PI_MODEL': 'orin2-worker'},
+        ]
+        self.assertEqual(agent.count_local_sessions(iter(envs), ('orin1-worker', 'orin2-worker'),
+                                                    {'node': 'orin2', 'source_alias': 'orin2-worker-qfn'}),
+                         {'orin1-worker': 2, 'orin2-worker': 1})
+
+    def test_maps_local_coder_by_source_alias(self):
+        self.assertEqual(agent.count_local_sessions([self.pi_env('local-coder')], self.MODELS,
+                                                    {'node': 'custom', 'source_alias': 'another-worker'}),
+                         {'orin1-worker': 0, 'orin2-worker': 0, 'another-worker': 1})
+
+    def test_picks_first_in_pool_on_a_tie(self):
+        with mock.patch.dict(os.environ, {'AGENTIAC_LOCAL_POOL': 'orin2-worker, orin1-worker'}), \
+                mock.patch.object(agent, 'target', side_effect=ValueError('unknown route')), \
+                mock.patch.object(agent, 'process_envs', return_value=[self.pi_env('local-coder')]), \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(agent.pick_local_alias(self.MODELS), 'orin2-worker')
+        self.assertEqual(stderr.getvalue(), 'local-any: picked orin2-worker (sessions: orin2-worker=0, orin1-worker=0)\n')
+
+    def test_picks_the_least_busy_worker(self):
+        with mock.patch.dict(os.environ, clear=True), \
+                mock.patch.object(agent, 'target', return_value=('routed-target', {'node': 'orin1'})), \
+                mock.patch.object(agent, 'process_envs', return_value=[self.pi_env('local-coder')]), \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(agent.pick_local_alias(self.MODELS), 'orin2-worker')
+        self.assertEqual(stderr.getvalue(), 'local-any: picked orin2-worker (sessions: orin1-worker=1, orin2-worker=0, another-worker=0)\n')
+
+    def test_default_pool_is_the_node_worker_models_in_declared_order(self):
+        tracked = ('control-small', 'orin2-worker', 'genie-worker-gyro-m', 'orin1-worker', 'cloud-gpt-sol')
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('AGENTIAC_LOCAL_POOL', None)
+            self.assertEqual(agent.local_pool(tracked), ('orin2-worker', 'orin1-worker'))
+            with self.assertRaisesRegex(SystemExit, 'no tracked local-infra model is named <node>-worker'):
+                agent.local_pool(('control-small', 'cloud-gpt-sol'))
+
+    def test_pool_override_requires_tracked_model_ids(self):
+        with mock.patch.dict(os.environ, {'AGENTIAC_LOCAL_POOL': 'another-worker'}):
+            self.assertEqual(agent.local_pool(self.MODELS), ('another-worker',))
+        for override, invalid in [('orin1-worker,missing', 'missing'), ('', '')]:
+            with self.subTest(override=override), mock.patch.dict(os.environ, {'AGENTIAC_LOCAL_POOL': override}):
+                with self.assertRaisesRegex(SystemExit, f"AGENTIAC_LOCAL_POOL: {invalid!r} is not a tracked"):
+                    agent.local_pool(self.MODELS)
+
+    def test_resume_passes_the_new_worker_and_saved_session_to_pi(self):
+        models = [{'id': alias, 'name': alias, 'contextWindow': 65536, 'maxTokens': 8192} for alias in self.MODELS]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / 'state'
+            session = state / 'saved.jsonl'
+            provider = {'models': models}
+            tracked = root / 'agents/pi/models.json'
+            tracked.parent.mkdir(parents=True)
+            tracked.write_text(json.dumps({'providers': {'local-infra': provider}}))
+            with mock.patch.object(agent, 'ROOT', root), mock.patch.object(agent, 'STATE', state), \
+                    mock.patch.object(sys, 'argv', ['agent.py', '--repo', tmp, '--alias', 'local-any', '--resume']), \
+                    mock.patch.object(agent, 'latest_session', return_value=(session, root)), \
+                    mock.patch.object(agent, 'toplevel', return_value=root), \
+                    mock.patch.object(agent, 'pick_local_alias', return_value='orin2-worker') as pick, \
+                    mock.patch.object(agent, 'read_key', return_value='fake-key'), \
+                    mock.patch.object(agent, 'gateway', return_value='http://gateway.invalid'), \
+                    mock.patch.object(os, 'umask'), mock.patch.object(os, 'chdir'), \
+                    mock.patch.object(os, 'execve') as launch, contextlib.redirect_stderr(io.StringIO()) as stderr:
+                agent.main()
+            pick.assert_called_once_with({model['id']: model for model in models})
+            launch.assert_called_once()
+            _, argv, env = launch.call_args.args
+            self.assertEqual(env['AGENTIAC_PI_MODEL'], 'orin2-worker')
+            self.assertEqual(env['AGENTIAC_PI_PID'], str(os.getpid()))  # execve keeps the PID
+            self.assertEqual(env['PI_CODING_AGENT_DIR'], str(state))
+            self.assertEqual(argv[argv.index('--model') + 1], 'orin2-worker')
+            self.assertEqual(argv[argv.index('--session') + 1], str(session))
+            saved = json.loads((state / 'models.json').read_text())
+            self.assertEqual(saved['providers']['local-infra']['models'], [models[1]])
+            self.assertIn('pi -> orin2-worker', stderr.getvalue())
 
 
 class ThinkingTests(SyntheticSiteMixin, unittest.TestCase):

@@ -23,12 +23,21 @@ procedures are in [Operations](operations.md); naming rules are in
 cd ~/repo
 agentiac code                          # interactive pi on local-coder, REPO = this directory
 agentiac code -p "summarize src/"      # one-shot (pi print mode)
+agentiac code -m local-any             # pick a worker for this session
 agentiac code ~/repo -m control-small  # small model on the control host
 agentiac code --resume                 # resume the latest session in its saved worktree
 agentiac code --in-place               # no worktree (edits REPO directly)
 agentiac code --loop-guard             # stop pi after 10/20 repeated bash commands
 agentiac code --thinking high          # starting thinking level (targets with a thinking switch)
 ```
+
+`local-any` picks the worker with the fewest visible pi sessions on the launch host, using
+pool order for ties. The default pool is every tracked pi model named `<node>-worker`
+(one fixed node each), in the order of `agents/pi/models.json`. Set
+`AGENTIAC_LOCAL_POOL` to a comma-separated list of tracked pi model IDs to override it.
+`local-any` excludes sessions launched before the launcher started setting `AGENTIAC_PI_MODEL`.
+`--resume -m local-any` picks again. If it chooses a different worker, the old node's
+prefix cache is not reused.
 
 Targets that declare a verified thinking switch (`thinking` in `gateway/local-coder.json`)
 start at their configured `thinking_start` level and allow `/thinking` inside `pi` (or
@@ -92,6 +101,7 @@ agentiac code /path/to/existing/worktree --in-place -- --session /path/to/sessio
 | Alias | Target | Use |
 |---|---|---|
 | `local-coder` | Explicitly selected route target (`agentiac route` shows it) | Default coding target |
+| `local-any` | Least busy pool member at launch | One worker per pi session |
 | `<node>-worker[-<model>]` | Fixed node transport | Explicit routing and evaluation |
 | `control-small` | Small local profile on the control host | Light tasks, summaries, smoke checks |
 | `<node>-<backend>-<context>` | Specific declared target with identity guard | Evaluating or calling a fixed target |
