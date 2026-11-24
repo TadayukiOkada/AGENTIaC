@@ -16,9 +16,26 @@
         prepare_tensorfold: >-
           {{ spark_tensorfold | default(false)
              and (backend_id is not defined or backend_id == 'tf-1.1.4-qfn-mxfp8-nvfp4') }}
+    # A manifest that declares its container `build` is prepared from that declaration (scripts/container-prepare.py),
+    # whatever the engine. TensorFold keeps its recipe path and Strata its trial roots: neither declares `build`.
+    - name: A backend is asked for by its file name
+      ansible.builtin.assert:
+        that: backend_id is match('^[a-z0-9][a-z0-9._-]*$')
+        fail_msg: '--backend names a file under backends/ by its stem: {{ backend_id }} is not one'
+      when: backend_id is defined
+    - name: Read the manifest that was asked for
+      ansible.builtin.set_fact:
+        manifest: "{{ lookup('file', instance_root + '/backends/' + backend_id + '.json') | from_json }}"
+      when: backend_id is defined and not (prepare_tensorfold | bool)
+    - name: A declared container build is prepared from its declaration
+      ansible.builtin.set_fact:
+        prepare_container: "{{ backend_id is defined and not (prepare_tensorfold | bool) and manifest.build is defined }}"
     - name: Prepare TensorFold
       ansible.builtin.include_tasks: tasks/prepare-tensorfold.yml
       when: prepare_tensorfold | bool
+    - name: Prepare a declared container build
+      ansible.builtin.include_tasks: tasks/prepare-container.yml
+      when: prepare_container | bool
     - name: Prepare Strata
       ansible.builtin.include_tasks: tasks/prepare-strata.yml
-      when: not (prepare_tensorfold | bool)
+      when: not (prepare_tensorfold | bool) and not (prepare_container | bool)

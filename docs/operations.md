@@ -211,14 +211,40 @@ agentiac ops prepare <host> --backend <id> [--reuse-root PATH | --reuse-declared
 sources, and copies reused weights onto independent inodes (`nlink == 1`, verified by
 SHA256; [ADR 0008](adr/0008-two-generation-retention.md)).
 
-Where a manifest's weights are is the manifest's answer, and one reading of it is used everywhere:
-a flat `files` manifest is served from the trial root `infra/inventory.yml` declares and holds them
-under `<root>/data/models`, and a manifest that carries its model as `model.directory` is measured
-under that host's `project_root` - which is what `ops storage` lists as a held weight directory and
-what a claim's F6 guard refuses to start without. A manifest that declares its `service` also adds
-its own root to what `ops storage` measures and what `infra/retention.yml` can hold. `ops storage`
-asks each host for the images this site's `resource_prefix` names plus the NGC PyTorch base images
-its recipes pin; an upstream image a manifest pins is not ours to name.
+A manifest that declares its container `build` is prepared from that declaration instead
+(`scripts/container-prepare.py`, run as the `<resource_prefix>-prepare-<id>.service` job):
+
+```json
+"engine": {"repository": "https://…/engine.git", "revision": "<40 hex>", "version": "…"},
+"build": {"dockerfile": "Dockerfile", "dockerfile_sha256": "<64 hex>",
+          "base_images": {"vendor/base:tag": "sha256:<64 hex>"},
+          "args": {"BUILDKIT_SYNTAX": "docker/dockerfile:1@sha256:<64 hex>"}, "context": ".", "free_gib": 40},
+"image": {"tag": "<resource_prefix>-<engine>:<tag>", "id": "sha256:<64 hex>"}
+```
+
+- **Source**: fetched at `build.revision` (default `engine.revision`). It must check out
+  clean, and the Dockerfile and context must resolve inside it.
+- **Dockerfile**: refused unless its SHA-256 matches. That hash is what makes the build
+  reviewable: whatever its `RUN` steps fetch is what the reviewed text says. A remote `ADD`
+  without `--checksum` is refused.
+- **Pinned images**: every image the build resolves must be pinned by digest. That covers each
+  `FROM`, each `COPY --from=` / `RUN --mount=from=` naming an image (not a stage), and the
+  `# syntax=` frontend (via `build.args.BUILDKIT_SYNTAX`).
+- **How bases are pinned**: each declared base reaches the build as
+  `--build-context <reference>=docker-image://<repository>@<digest>`. No local tag is read,
+  pulled or retagged, since on a borrowed host it may be the owner's. A pin no instruction uses,
+  two spellings of one image, and a reference pinned twice are all refused.
+- **Tagging**: the image is built untagged and tagged `image.tag` afterwards, only when it is the
+  declared `image.id` (or none is declared yet). The tag must also be free or held by an image
+  this site labelled for this backend; a tag held by anything else is left alone. The tag must
+  carry the site prefix so `ops storage` and the retention ledger see it.
+- **Labels and reuse**: the `io.agent-infra.*` labels name the backend, the revision, the
+  Dockerfile hash, and a hash of the remaining build input. An existing image is reused only
+  when all of them match.
+- **Result**: a first build (no `image.id`) prints the id to declare. A build that differs from
+  a declared `image.id` stays untagged and fails. The model directory is checked, never
+  downloaded: weights come through `ops download` and its license gate. One preparation runs at
+  a time on a host, and the job writes `<project_root>/container-prepare/<id>/result.json`.
 
 Root retirement and thinning follow a two-stage, reference-gated flow:
 

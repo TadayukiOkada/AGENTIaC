@@ -1,0 +1,78 @@
+# A manifest that declares its container `build` (scripts/container-prepare.py): fetch the pinned source, check the
+# Dockerfile and the base images by digest, build the image under this site's prefix. Never starts a model, and never
+# downloads weights - those arrive through `ops download` and its license gate.
+- name: Refuse a container preparation the manifest cannot describe
+  ansible.builtin.assert:
+    that:
+      - backend_id is match('^[a-z0-9][a-z0-9._-]*$')
+      - manifest.id | default('') == backend_id
+      - manifest.build is mapping
+      - manifest.build.dockerfile | default('Dockerfile') is match('^(?!/)(?!.*(^|/)[.][.](/|$)).+$')
+      - manifest.build.context | default('.') is match('^(?!/)(?!.*(^|/)[.][.](/|$)).+$')
+      - manifest.build.dockerfile | default('Dockerfile') is string
+      - manifest.build.context | default('.') is string
+      - manifest.build.dockerfile_sha256 | default('') is match('^[0-9a-f]{64}$')
+      - (manifest.build.repository | default(manifest.engine.repository | default(''))) is match('^https://')
+      - manifest.image.id is not defined or manifest.image.id is match('^sha256:[0-9a-f]{64}$')
+      - (manifest.build.base_images | default({})) is mapping
+      - (manifest.build.base_images | default({}) | dict2items | map(attribute='value')
+         | reject('match', '^sha256:[0-9a-f]{64}$') | list | length) == 0
+      - manifest.image is mapping
+      - manifest.image.tag | default('') is match('^' + resource_prefix + '-[a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9._-]*$')
+      - (manifest.build.revision | default(manifest.engine.revision | default(''))) is match('^[0-9a-f]{40}$')
+      - inventory_hostname in (manifest.workers | default({}))
+    fail_msg: >-
+      backends/{{ backend_id }}.json must carry `id` {{ backend_id }}, `build.dockerfile_sha256`, a `build.dockerfile`
+      and `build.context` inside the repository, an https source, digests in `build.base_images` and `image.id`, an
+      `image.tag` that starts with
+      {{ resource_prefix }}-, a full source revision (`build.revision` or `engine.revision`), and
+      {{ inventory_hostname }} under `workers`
+- name: Create the preparation directories
+  ansible.builtin.file:
+    path: '{{ project_root }}/{{ item }}'
+    state: directory
+    mode: '0750'
+  loop: [backend-manifests, scripts]
+- name: Copy the pinned manifest
+  ansible.builtin.copy:
+    src: '{{ instance_root }}/backends/{{ backend_id }}.json'
+    dest: '{{ project_root }}/backend-manifests/{{ backend_id }}.json'
+    mode: '0640'
+- name: Copy the preparation script
+  ansible.builtin.copy:
+    src: ../scripts/container-prepare.py
+    dest: '{{ project_root }}/scripts/container-prepare.py'
+    mode: '0750'
+- name: Inspect the current preparation job
+  ansible.builtin.command:
+    argv: [systemctl, is-active, '{{ resource_prefix }}-prepare-{{ backend_id }}.service']
+  register: preparing
+  check_mode: false
+  failed_when: false
+  changed_when: false
+# The docker build runs under dockerd, so these limits cover the script, git and the checks, not the build.
+- name: Start the persistent preparation
+  become: true
+  ansible.builtin.command:
+    argv:
+      - systemd-run
+      # the suffix is written out: a stem that itself ends in `.service` must not name another stem's job
+      - '--unit={{ resource_prefix }}-prepare-{{ backend_id }}.service'
+      - --collect
+      - --uid={{ ansible_user }}
+      - --property=Nice=10
+      - --property=IOSchedulingClass=idle
+      - --property=RuntimeMaxSec=4h
+      - /usr/bin/python3
+      - '{{ project_root }}/scripts/container-prepare.py'
+      - '{{ project_root }}/backend-manifests/{{ backend_id }}.json'
+      - '{{ project_root }}'
+      - --resource-prefix
+      - '{{ resource_prefix }}'
+  when: preparing.stdout != "active"
+  changed_when: true
+- name: Say where the preparation reports
+  ansible.builtin.debug:
+    msg: >-
+      journalctl -u {{ resource_prefix }}-prepare-{{ backend_id }}.service on {{ inventory_hostname }};
+      the result is {{ project_root }}/container-prepare/{{ backend_id }}/result.json
