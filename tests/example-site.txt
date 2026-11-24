@@ -20,6 +20,7 @@ test_compaction_e2e
 test_compaction_guard
 test_components
 test_connectivity_watch
+test_container_worker
 test_context_probe
 test_dashboard_operations
 test_declared

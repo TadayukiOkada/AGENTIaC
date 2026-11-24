@@ -286,7 +286,7 @@ class PrepareUnitTests(Fixture):
         self.assertEqual(list(written), [f'{root}/service.json'])
         facts = json.loads(written[f'{root}/service.json'])
         self.assertEqual(facts, {'unit': f'{self.prefix}-infernix-inference', 'port': 18090, 'root': root,
-                                 'container': 'infernix-serving', 'status_path': '/health'})
+                                 'container': 'infernix-serving', 'status_path': '/health', 'start_timeout_s': None})
         self.assertEqual(played, [('unit', 'workere', '-e', 'unit=infernix-inference',
                                    '-e', f'directory={root}')])
 

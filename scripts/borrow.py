@@ -522,8 +522,8 @@ def prepare_backend(name, host, config, backend=None):
         if not failed:
             failed = put(host, worker_src, f'{root}/worker.py')
         facts = json.dumps({'unit': service['unit'], 'port': service['port'], 'root': root,
-                            'container': service['container'], 'status_path': service['status_path']},
-                           indent=2) + '\n'
+                            'container': service['container'], 'status_path': service['status_path'],
+                            'start_timeout_s': service['start_timeout_s']}, indent=2) + '\n'
         if not failed:
             failed = on_host(host, [f'umask 077 && cat > {root}/service.json'], input=facts).returncode
         if failed:
