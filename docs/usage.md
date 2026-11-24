@@ -164,7 +164,13 @@ it launches with. A host that declares neither refuses the claim, and a declared
 recipe this checkout does not have is refused before the host is touched: the role in
 `infra/unit.yml`'s `units:` map, the text `infra/templates/<role>.service.j2` and the declared
 script, all three named by the refusal. `claim`'s unit playbook (`infra/unit.yml`) checks the text again on the
-control side, so a role added without its template does not fail halfway through a claim.
+control side, so a role added without its template does not fail halfway through a claim. For an engine served by a
+container, `scripts/container-service-worker.py` is the script to declare: it launches the argv in
+`backends/<name>.launch.json`, refuses a container name held by a running or unowned container or by one whose image
+is not the `image.id` the manifest pins, refuses a foreign GPU process, refuses an occupied port when the container
+name is free, waits on the declared
+`status_path` for the declared `start_timeout_s`, samples `MemAvailable` throughout, and treats `SIGTERM` as the clean
+stop it is. It carries no engine's container name, port, image id or memory threshold - those are the declaration's.
 
 After a reboot, `agentiac reclaim` restores the active `local-coder` host without moving
 the route or restarting the gateway. Hosts armed with `auto_reclaim: true` in
