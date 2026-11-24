@@ -1166,9 +1166,10 @@ def build_parser(former=True):
     q.add_argument('--check', action='store_true', help='show what would change; change nothing')
     q.add_argument('--only', choices=('tunnels', 'gateway', 'chatgpt', 'watch'), help='deploy one part')
     q.add_argument('--allow-dirty', action='store_true', help='deploy with uncommitted changes in this checkout')
-    q = o.add_parser('prepare', help="prepare a pinned backend: Spark's TensorFold, or a Strata --backend ID")
+    q = o.add_parser('prepare', help="prepare a pinned backend: Spark's TensorFold, a Strata --backend ID, or a "
+                                     "--backend ID whose manifest declares its container `build`")
     q.add_argument('host', choices=hosts)
-    q.add_argument('--backend', metavar='ID', help='Strata: backends/ID.json')
+    q.add_argument('--backend', metavar='ID', help='backends/ID.json: a Strata manifest, or one that declares `build`')
     q.add_argument('--reuse-root', metavar='PATH', help='Strata: prepared root whose identical files may be copied')
     q.add_argument('--reuse-declared', action='store_true',
                    help='Strata: take the reuse root this checkout declares (infra/retention.yml, form: full, '

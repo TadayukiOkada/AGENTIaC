@@ -281,13 +281,18 @@ def prepare_gate(graph, host, backend_id, reuse_root=None, reuse_declared=False,
     """What `ops prepare` is allowed to do about weights, or the refusal that stops it (T5.8, S §9 F12).
 
     Three answers: `('skip', None)` for a manifest that is not a Strata backend manifest (Spark's TensorFold names
-    no `workers`, and nothing is decided here for it); `('reuse', path, source manifest id)` when the operator named
+    no `workers`, and a manifest that declares its container `build` fetches no weights here, so nothing is decided
+    for either); `('reuse', path, source manifest id)` when the operator named
     a root that checks out or `--reuse-declared` picks the one candidate found; `('download', bytes)` when there is
     nothing to copy or the operator said `--download`. A candidate on the host and no decision given is a refusal.
 
     Returns `(manifest, trial root key, trial root path, answer)`.
     """
     manifest = manifest_for(graph, backend_id)
+    if 'build' in manifest:   # the same test infra/prepare.yml makes (`manifest.build is defined`)
+        # A declared container build is prepared from that declaration (scripts/container-prepare.py), which fetches
+        # no weights: asking it the Strata trial-root question would refuse it for a root it never uses.
+        return manifest, None, None, ('skip', None)
     if not manifest.get('files'):
         # Deliberately the flat key, not `weight_entries`: this gate decides the *Strata trial-root* preparation, and
         # a manifest in the nested shape has no trial root to prepare - its weights arrive with an image or a
