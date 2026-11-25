@@ -5,9 +5,12 @@ The worktree gets its own branch (agent/<timestamp>) so the user's checkout and
 uncommitted changes are never touched; review and merge the branch yourself.
 pi state (models.json, sessions) lives in artifacts/agents/pi-daily, separate
 from any personal pi configuration.
+The local-any alias selects a worker once per launch, including on resume.
+When resume picks a different worker, the old node's prefix cache is not reused.
 """
 import argparse
 import datetime
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -27,6 +30,10 @@ from agentiac.errors import command as cli_name  # noqa: E402
 
 STATE = ROOT / 'artifacts/agents/pi-daily'
 WORKTREES = Path.home() / 'agent-worktrees'
+# local-any: a launcher records its pick here until its pi session is visible in /proc, so a launch that is still
+# creating its worktree counts too (T: two launches at once must not both see an idle pool).
+PICKS = STATE / 'local-any'
+PICK_TTL_S = 600
 
 THINKING = ['off', 'minimal', 'low', 'medium', 'high']
 COMPACTION_GUARD = EXTENSIONS / 'compaction-guard.ts'
@@ -94,6 +101,157 @@ def target(alias):
     routes = json.loads(route.ROUTES.read_text())
     selected = route_aliases.target_for_api(routes, alias, route.current())
     return (selected, routes['targets'][selected]) if selected is not None else None
+
+
+def worker_node(alias, nodes):
+    """The inventory node a fixed-node worker alias names (`<node>-worker` or `<node>-worker-<model>`), else None."""
+    for node in sorted(nodes, key=len, reverse=True):     # the longest name first: `a-b-worker` is a-b's, not a's
+        if alias == f'{node}-worker' or alias.startswith(f'{node}-worker-'):
+            return node
+    return None
+
+
+def local_pool(tracked_models, nodes):
+    """The ordered local-any pool.
+
+    By default: the tracked `<node>-worker` model of every inventory node that is not `borrowed`, in models.json
+    order. A request to a borrowed host makes its front load a model on someone else's machine, so a borrowed host is
+    never picked unless AGENTIAC_LOCAL_POOL names it. The override is a comma-separated list of tracked fixed-node
+    worker models (`<node>-worker[-<model>]`); a cloud or control-host model is not a worker and is refused.
+    """
+    override = os.environ.get('AGENTIAC_LOCAL_POOL')
+    if override is None:
+        dedicated = {f'{node}-worker' for node, facts in nodes.items() if not (facts or {}).get('borrowed')}
+        pool = tuple(alias for alias in tracked_models if alias in dedicated)
+        if not pool:
+            raise SystemExit('local-any: no tracked local-infra model is the <node>-worker of a dedicated (not borrowed) '
+                             'inventory node; declare one in agents/pi/models.json or set AGENTIAC_LOCAL_POOL')
+        return pool
+    pool = tuple(alias.strip() for alias in override.split(','))
+    for alias in pool:
+        if alias not in tracked_models:
+            raise SystemExit(f'AGENTIAC_LOCAL_POOL: {alias!r} is not a tracked local-infra model id')
+        if worker_node(alias, nodes) is None:
+            raise SystemExit(f'AGENTIAC_LOCAL_POOL: {alias!r} is not a fixed-node worker model (<node>-worker[-<model>] '
+                             'of an inventory node)')
+    return pool
+
+
+def session_env(pid, raw):
+    """The launch environment of PID when PID is a pi session itself, else None.
+
+    pi rewrites its process title, so its command line cannot be read; its environment can. Children
+    of a session (pi's bash tool) inherit the markers but not the PID agent.py recorded before execve.
+    Only the two markers and the agent dir are kept: the rest of another process's environment is not ours to hold.
+    """
+    env = dict(entry.split('=', 1) for entry in os.fsdecode(raw).split('\0') if '=' in entry)
+    if env.get('AGENTIAC_PI_PID') != pid:
+        return None
+    return {key: env[key] for key in ('AGENTIAC_PI_MODEL', 'AGENTIAC_PI_PID', 'PI_CODING_AGENT_DIR') if key in env}
+
+
+def process_envs():
+    """Yield the environments of running pi sessions (readable Linux processes), excluding this launcher."""
+    if not Path('/proc').is_dir():
+        print('local-any: no /proc on this host, so running sessions cannot be counted; every worker reads as idle',
+              file=sys.stderr)
+        return
+    own_pid = str(os.getpid())
+    for environ in Path('/proc').glob('[0-9]*/environ'):
+        pid = environ.parent.name
+        if pid == own_pid:
+            continue
+        try:
+            raw = environ.read_bytes()
+        except OSError:
+            continue
+        env = session_env(pid, raw) if raw else None
+        if env is not None:
+            yield env
+
+
+def pending_picks(visible, now=None):
+    """Picks recorded by launchers whose pi session is not visible yet; stale records are removed.
+
+    A record counts while its PID is alive, not yet a visible session, and younger than PICK_TTL_S (a PID reused by an
+    unrelated process does not keep a pick alive forever).
+    """
+    now = now if now is not None else datetime.datetime.now(datetime.timezone.utc).timestamp()
+    found = []
+    for record in PICKS.glob('[0-9]*'):
+        try:
+            pick = json.loads(record.read_text())
+        except (OSError, ValueError):
+            pick = {}
+        pid = record.name
+        alive = Path(f'/proc/{pid}').exists()
+        if not alive or now - float(pick.get('time', 0)) > PICK_TTL_S or not pick.get('AGENTIAC_PI_MODEL'):
+            record.unlink(missing_ok=True)
+            continue
+        if pid not in visible:
+            found.append({'AGENTIAC_PI_MODEL': pick['AGENTIAC_PI_MODEL'], 'AGENTIAC_PI_PID': pid,
+                          'PI_CODING_AGENT_DIR': str(STATE)})
+    return found
+
+
+def session_node(alias, nodes, local_coder):
+    """The node a session on ALIAS runs on: local-coder's routed node, the router's low model's node, a fixed-node
+    worker's node, or a route target's node. None when it runs on no inventory node (cloud, unknown)."""
+    if alias == 'local-coder':
+        return (local_coder or {}).get('node') or worker_node((local_coder or {}).get('source_alias') or '', nodes)
+    if alias == 'router':
+        try:
+            low = json.loads((ROOT / 'agents/pi/router.json').read_text())['low']
+        except (OSError, ValueError, KeyError):
+            return None
+        return session_node(low, nodes, local_coder) if low != 'router' else None
+    node = worker_node(alias, nodes)
+    if node is not None:
+        return node
+    try:
+        found = target(alias)
+    except (OSError, ValueError, KeyError, TypeError):
+        found = None
+    return found[1].get('node') if found else None
+
+
+def count_local_sessions(envs, pool, nodes, local_coder=None):
+    """Count daily pi sessions per pool member by the node each session runs on, whatever alias it was started with."""
+    counts = dict.fromkeys(pool, 0)
+    members = {}
+    for alias in pool:
+        members.setdefault(worker_node(alias, nodes), []).append(alias)
+    nodes_of = {}
+    for env in envs:
+        alias = env.get('AGENTIAC_PI_MODEL')
+        if env.get('PI_CODING_AGENT_DIR') != str(STATE) or not alias:
+            continue
+        if alias not in nodes_of:
+            nodes_of[alias] = session_node(alias, nodes, local_coder)
+        for member in members.get(nodes_of[alias], []) if nodes_of[alias] else []:
+            counts[member] += 1
+    return counts
+
+
+def pick_local_alias(tracked_models, nodes):
+    """The least busy pool member, ties to pool order; the pick is recorded before this launcher goes on."""
+    pool = local_pool(tracked_models, nodes)
+    try:
+        resolved = target('local-coder')
+    except (OSError, ValueError, KeyError, TypeError):
+        resolved = None
+    PICKS.mkdir(parents=True, exist_ok=True)
+    with (STATE / 'local-any.lock').open('w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)      # one pick at a time, so the second launcher sees the first one's record
+        envs = list(process_envs())
+        envs += pending_picks({env.get('AGENTIAC_PI_PID') for env in envs})
+        counts = count_local_sessions(envs, pool, nodes, resolved[1] if resolved else None)
+        alias = min(pool, key=counts.__getitem__)
+        (PICKS / str(os.getpid())).write_text(json.dumps(
+            {'AGENTIAC_PI_MODEL': alias, 'time': datetime.datetime.now(datetime.timezone.utc).timestamp()}))
+    sessions = ', '.join(f'{worker}={count}' for worker, count in counts.items())
+    print(f'local-any: picked {alias} (sessions: {sessions})', file=sys.stderr)
+    return alias
 
 
 def model_entry(alias, thinking=False):
@@ -187,7 +345,9 @@ def code_key_name(alias, cloud_allowed):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--repo', type=Path, required=True)
-    parser.add_argument('--alias', default='local-coder', help="gateway alias, or 'router' for agents/pi/extensions/router.ts")
+    parser.add_argument('--alias', default='local-coder',
+                        help='gateway alias (default local-coder), local-any for the least busy worker, '
+                             'or router for rule-based escalation')
     parser.add_argument('--allow-cloud', action='store_true',
                         help='router: escalate to the cloud model without asking (repository must be in agents/pi/router.json)')
     parser.add_argument('--in-place', action='store_true', help='work in REPO directly instead of a new worktree')
@@ -204,9 +364,14 @@ def main():
     resumed = latest_session(STATE) if args.resume else None
     top = toplevel(resumed[1] if resumed else args.repo.resolve())
     config = json.loads((ROOT / 'agents/pi/models.json').read_text())
+    if args.alias == 'local-any':
+        from agentiac import declared
+        # the picked alias is then described exactly as `-m <alias>` would be (model_entry), not from a second reading
+        args.alias = pick_local_alias([model['id'] for model in config['providers']['local-infra']['models']],
+                                      declared.hosts(ROOT))
     env = {name: value for name, value in os.environ.items()
            if name not in ('LITELLM_MASTER_KEY', 'LITELLM_TASK_KEY', 'LITELLM_CODE_CLOUD_KEY', 'LITELLM_CODE_KEY')}
-    env.update(PI_CODING_AGENT_DIR=str(STATE), PI_OFFLINE='1',
+    env.update(PI_CODING_AGENT_DIR=str(STATE), PI_OFFLINE='1', AGENTIAC_PI_MODEL=args.alias, AGENTIAC_PI_PID=str(os.getpid()),
                PATH=str(NODE.parent) + os.pathsep + os.environ.get('PATH', '/usr/bin:/bin'))
     cloud_allowed = False
     if args.alias == 'router':

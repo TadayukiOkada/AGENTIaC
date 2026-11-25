@@ -23,12 +23,31 @@ procedures are in [Operations](operations.md); naming rules are in
 cd ~/repo
 agentiac code                          # interactive pi on local-coder, REPO = this directory
 agentiac code -p "summarize src/"      # one-shot (pi print mode)
+agentiac code -m local-any             # pick a worker for this session
 agentiac code ~/repo -m control-small  # small model on the control host
 agentiac code --resume                 # resume the latest session in its saved worktree
 agentiac code --in-place               # no worktree (edits REPO directly)
 agentiac code --loop-guard             # stop pi after 10/20 repeated bash commands
 agentiac code --thinking high          # starting thinking level (targets with a thinking switch)
 ```
+
+`local-any` picks the pool member whose node has the fewest pi sessions on the launch host,
+using pool order for ties.
+
+- **What counts**: a session counts against the node it runs on, whatever alias started it.
+  That includes `<node>-worker-<model>`, a route target or short alias, `local-coder` (its
+  routed node), and `router` (its low model's node).
+- **Launches still starting**: a launch that has picked but not yet started pi counts too. It
+  records its pick under the pi agent dir, and picks are made one at a time.
+- **Default pool**: the tracked `<node>-worker` model of every inventory node that is not
+  `borrowed`, in the order of `agents/pi/models.json`. A borrowed host is never picked unless
+  you name it, because a request there makes its front load a model on someone else's machine.
+- **Override**: set `AGENTIAC_LOCAL_POOL` to a comma-separated list of tracked fixed-node worker
+  models (`<node>-worker[-<model>]`). A cloud or control-host model is refused.
+- **Not counted**: sessions launched before the launcher started setting `AGENTIAC_PI_MODEL`,
+  and sessions of other users.
+- **Resume**: `--resume -m local-any` picks again. If it chooses a different worker, the old
+  node's prefix cache is not reused.
 
 Targets that declare a verified thinking switch (`thinking` in `gateway/local-coder.json`)
 start at their configured `thinking_start` level and allow `/thinking` inside `pi` (or
@@ -92,6 +111,7 @@ agentiac code /path/to/existing/worktree --in-place -- --session /path/to/sessio
 | Alias | Target | Use |
 |---|---|---|
 | `local-coder` | Explicitly selected route target (`agentiac route` shows it) | Default coding target |
+| `local-any` | Least busy pool member at launch | One worker per pi session |
 | `<node>-worker[-<model>]` | Fixed node transport | Explicit routing and evaluation |
 | `control-small` | Small local profile on the control host | Light tasks, summaries, smoke checks |
 | `<node>-<backend>-<context>` | Specific declared target with identity guard | Evaluating or calling a fixed target |

@@ -1,6 +1,7 @@
 """Local-coder rendering, borrowed-host release report, claims, and smoke stream parsing."""
 import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -269,6 +270,174 @@ class SyntheticSiteMixin:
         for p in patchers:
             p.start()
             self.addCleanup(p.stop)
+
+
+class LocalAnyTests(unittest.TestCase):
+    MODELS = ('workera-worker', 'workerb-worker', 'workerc-worker')
+    NODES = {'workera': {}, 'workerb': {}, 'workerc': {}, 'workerd': {'borrowed': True}, 'gpu-box-1': {}}
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.state = Path(directory.name) / 'pi-daily'
+        self.state.mkdir()
+        for name, value in (('STATE', self.state), ('PICKS', self.state / 'local-any')):
+            patcher = mock.patch.object(agent, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def pi_env(self, alias, pid='0'):
+        return {'PI_CODING_AGENT_DIR': str(self.state), 'AGENTIAC_PI_MODEL': alias, 'AGENTIAC_PI_PID': pid}
+
+    def test_reads_proc_environments_keeps_only_the_markers_and_skips_inaccessible_processes(self):
+        own, unreadable, vanished, pi = (
+            SimpleNamespace(parent=SimpleNamespace(name=pid), read_bytes=mock.Mock())
+            for pid in ('100', '101', '102', '103')
+        )
+        unreadable.read_bytes.side_effect = PermissionError
+        vanished.read_bytes.side_effect = FileNotFoundError
+        pi.read_bytes.return_value = (b'AGENTIAC_PI_MODEL=workera-worker\0AGENTIAC_PI_PID=103\0LITELLM_CODE_KEY=secret\0'
+                                      b'OTHER=a=b\0malformed\0')
+        # a child of a session (pi's bash tool) inherits the markers but not the recorded PID
+        child = SimpleNamespace(parent=SimpleNamespace(name='104'), read_bytes=mock.Mock(
+            return_value=b'AGENTIAC_PI_MODEL=workera-worker\0AGENTIAC_PI_PID=103\0'))
+        with mock.patch.object(Path, 'glob', return_value=[own, unreadable, vanished, pi, child]) as glob, \
+                mock.patch.object(os, 'getpid', return_value=100):
+            self.assertEqual(list(agent.process_envs()),
+                             [{'AGENTIAC_PI_MODEL': 'workera-worker', 'AGENTIAC_PI_PID': '103'}])   # no key is kept
+        glob.assert_called_once_with('[0-9]*/environ')
+        own.read_bytes.assert_not_called()
+
+    def test_a_host_without_proc_says_so_instead_of_reading_idle_silently(self):
+        with mock.patch.object(Path, 'is_dir', return_value=False), contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(list(agent.process_envs()), [])
+        self.assertIn('no /proc', err.getvalue())
+
+    def test_sessions_count_against_the_node_they_run_on_whatever_alias_started_them(self):
+        routes = {'workera-strata-128k': ('workera-strata-1.0-model-q4-128k', {'node': 'workera'})}
+        envs = [self.pi_env('workera-worker'), self.pi_env('workera-worker-gyro-m'), self.pi_env('workera-strata-128k'),
+                self.pi_env('local-coder'), self.pi_env('cloud-model'), self.pi_env('workerc-worker'),
+                {**self.pi_env('workerb-worker'), 'PI_CODING_AGENT_DIR': str(self.state.with_name('other'))},
+                {'PI_CODING_AGENT_DIR': str(self.state)}, {'AGENTIAC_PI_MODEL': 'workerb-worker'}]
+        with mock.patch.object(agent, 'target', side_effect=lambda alias: routes.get(alias)):
+            self.assertEqual(agent.count_local_sessions(iter(envs), ('workera-worker', 'workerb-worker'), self.NODES,
+                                                        {'node': 'workerb', 'source_alias': 'workerb-worker-q4'}),
+                             {'workera-worker': 3, 'workerb-worker': 1})
+
+    def test_local_coder_maps_by_source_alias_when_the_target_names_no_node(self):
+        self.assertEqual(agent.count_local_sessions([self.pi_env('local-coder')], self.MODELS, self.NODES,
+                                                    {'source_alias': 'workerc-worker-q4'}),
+                         {'workera-worker': 0, 'workerb-worker': 0, 'workerc-worker': 1})
+
+    def test_a_router_session_counts_against_its_low_models_node(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__('shutil').rmtree(root))
+        (root / 'agents/pi').mkdir(parents=True)
+        (root / 'agents/pi/router.json').write_text(json.dumps({'low': 'workerb-worker', 'high': 'cloud-model'}))
+        with mock.patch.object(agent, 'ROOT', root):
+            self.assertEqual(agent.count_local_sessions([self.pi_env('router')], self.MODELS, self.NODES),
+                             {'workera-worker': 0, 'workerb-worker': 1, 'workerc-worker': 0})
+
+    def test_picks_first_in_pool_on_a_tie(self):
+        with mock.patch.dict(os.environ, {'AGENTIAC_LOCAL_POOL': 'workerb-worker, workera-worker'}), \
+                mock.patch.object(agent, 'target', side_effect=ValueError('unknown route')), \
+                mock.patch.object(agent, 'process_envs', return_value=[self.pi_env('local-coder')]), \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(agent.pick_local_alias(self.MODELS, self.NODES), 'workerb-worker')
+        self.assertEqual(stderr.getvalue(), 'local-any: picked workerb-worker (sessions: workerb-worker=0, workera-worker=0)\n')
+
+    def test_picks_the_least_busy_worker(self):
+        with mock.patch.dict(os.environ, clear=True), \
+                mock.patch.object(agent, 'target', return_value=('routed-target', {'node': 'workera'})), \
+                mock.patch.object(agent, 'process_envs', return_value=[self.pi_env('local-coder')]), \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(agent.pick_local_alias(self.MODELS, self.NODES), 'workerb-worker')
+        self.assertEqual(stderr.getvalue(), 'local-any: picked workerb-worker (sessions: workera-worker=1, workerb-worker=0, workerc-worker=0)\n')
+
+    def test_a_launch_that_has_picked_but_not_started_pi_yet_counts_for_the_next_one(self):
+        # two launches in a row, before either pi exists: the first one's recorded pick moves the second
+        with mock.patch.dict(os.environ, {'AGENTIAC_LOCAL_POOL': 'workera-worker,workerb-worker'}), \
+                mock.patch.object(agent, 'target', return_value=None), \
+                mock.patch.object(agent, 'process_envs', return_value=[]), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with mock.patch.object(os, 'getpid', return_value=os.getpid()):
+                first = agent.pick_local_alias(self.MODELS, self.NODES)
+            with mock.patch.object(os, 'getpid', return_value=999999999):
+                second = agent.pick_local_alias(self.MODELS, self.NODES)
+        self.assertEqual((first, second), ('workera-worker', 'workerb-worker'))
+
+    def test_a_pick_stops_counting_once_its_session_is_visible_or_its_launcher_is_gone_or_old(self):
+        agent.PICKS.mkdir()
+        now = 1_000_000.0
+        alive = str(os.getpid())
+        (agent.PICKS / alive).write_text(json.dumps({'AGENTIAC_PI_MODEL': 'workera-worker', 'time': now}))
+        self.assertEqual([p['AGENTIAC_PI_MODEL'] for p in agent.pending_picks(set(), now)], ['workera-worker'])
+        self.assertEqual(agent.pending_picks({alive}, now), [])            # the session itself now counts
+        self.assertTrue((agent.PICKS / alive).exists())
+        self.assertEqual(agent.pending_picks(set(), now + agent.PICK_TTL_S + 1), [])     # too old: removed
+        self.assertFalse((agent.PICKS / alive).exists())
+        (agent.PICKS / '999999999').write_text(json.dumps({'AGENTIAC_PI_MODEL': 'workera-worker', 'time': now}))
+        self.assertEqual(agent.pending_picks(set(), now), [])              # launcher gone: removed
+        self.assertFalse((agent.PICKS / '999999999').exists())
+
+    def test_default_pool_is_the_dedicated_node_worker_models_in_declared_order(self):
+        tracked = ('small-local', 'workerb-worker', 'workere-worker-q2', 'workerd-worker', 'gpu-box-1-worker',
+                   'workera-worker', 'cloud-model')
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('AGENTIAC_LOCAL_POOL', None)
+            # a borrowed host (`shared`) is left out; a node name with a dash is still a node
+            self.assertEqual(agent.local_pool(tracked, self.NODES), ('workerb-worker', 'gpu-box-1-worker', 'workera-worker'))
+            with self.assertRaisesRegex(SystemExit, 'dedicated'):
+                agent.local_pool(('small-local', 'cloud-model', 'workerd-worker'), self.NODES)
+
+    def test_pool_override_requires_tracked_fixed_node_worker_models(self):
+        tracked = (*self.MODELS, 'cloud-model', 'small-local', 'workerd-worker')
+        with mock.patch.dict(os.environ, {'AGENTIAC_LOCAL_POOL': 'workerc-worker,workerd-worker'}):
+            self.assertEqual(agent.local_pool(tracked, self.NODES), ('workerc-worker', 'workerd-worker'))  # explicit
+        for override, words in [('workera-worker,missing', "'missing' is not a tracked"), ('', "'' is not a tracked"),
+                                ('workera-worker,cloud-model', "'cloud-model' is not a fixed-node worker"),
+                                ('small-local', "'small-local' is not a fixed-node worker")]:
+            with self.subTest(override=override), mock.patch.dict(os.environ, {'AGENTIAC_LOCAL_POOL': override}):
+                with self.assertRaisesRegex(SystemExit, words):
+                    agent.local_pool(tracked, self.NODES)
+
+    def test_worker_node_takes_the_longest_matching_node(self):
+        nodes = {'a': {}, 'a-b': {}}
+        self.assertEqual(agent.worker_node('a-b-worker', nodes), 'a-b')
+        self.assertEqual(agent.worker_node('a-worker-b', nodes), 'a')
+        self.assertIsNone(agent.worker_node('cloud-model', nodes))
+
+    def test_resume_passes_the_new_worker_described_as_its_own_alias_would_be(self):
+        models = [{'id': alias, 'name': alias, 'contextWindow': 65536, 'maxTokens': 8192} for alias in self.MODELS]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / 'state'
+            session = state / 'saved.jsonl'
+            tracked = root / 'agents/pi/models.json'
+            tracked.parent.mkdir(parents=True)
+            tracked.write_text(json.dumps({'providers': {'local-infra': {'models': models}}}))
+            with mock.patch.object(agent, 'ROOT', root), mock.patch.object(agent, 'STATE', state), \
+                    mock.patch.object(sys, 'argv', ['agent.py', '--repo', tmp, '--alias', 'local-any', '--resume']), \
+                    mock.patch.object(agent, 'latest_session', return_value=(session, root)), \
+                    mock.patch.object(agent, 'toplevel', return_value=root), \
+                    mock.patch.object(agent, 'pick_local_alias', return_value='workerb-worker') as pick, \
+                    mock.patch.object(agent, 'target', return_value=None), \
+                    mock.patch.object(agent, 'read_key', return_value='fake-key'), \
+                    mock.patch.object(agent, 'gateway', return_value='http://gateway.invalid'), \
+                    mock.patch.object(os, 'umask'), mock.patch.object(os, 'chdir'), \
+                    mock.patch.object(os, 'execve') as launch, contextlib.redirect_stderr(io.StringIO()) as stderr:
+                agent.main()
+            self.assertEqual(pick.call_args.args[0], list(self.MODELS))
+            launch.assert_called_once()
+            _, argv, env = launch.call_args.args
+            self.assertEqual(env['AGENTIAC_PI_MODEL'], 'workerb-worker')
+            self.assertEqual(env['AGENTIAC_PI_PID'], str(os.getpid()))  # execve keeps the PID
+            self.assertEqual(env['PI_CODING_AGENT_DIR'], str(state))
+            self.assertEqual(argv[argv.index('--model') + 1], 'workerb-worker')
+            self.assertEqual(argv[argv.index('--session') + 1], str(session))
+            saved = json.loads((state / 'models.json').read_text())
+            self.assertEqual(saved['providers']['local-infra']['models'], [models[1]])
+            self.assertIn('pi -> workerb-worker', stderr.getvalue())
 
 
 class ThinkingTests(SyntheticSiteMixin, unittest.TestCase):

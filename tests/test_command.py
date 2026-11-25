@@ -52,6 +52,10 @@ class PassThroughTests(unittest.TestCase):
     def test_code_defaults_to_local_coder_in_a_worktree(self):
         self.assertEqual(tail(planned('code', str(ROOT)))[2:], ['--alias', 'local-coder'])
 
+    def test_code_accepts_and_passes_local_any(self):
+        self.assertIn('local-any', command.code_aliases())
+        self.assertEqual(tail(planned('code', '-m', 'local-any'))[2:], ['--alias', 'local-any'])
+
     def test_code_resume_passes_the_resume_flag(self):
         self.assertEqual(tail(planned('code', '--resume'))[-1], '--resume')
 
