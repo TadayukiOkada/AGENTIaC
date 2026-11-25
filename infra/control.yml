@@ -7,7 +7,7 @@
     # forward; the control host serves on loopback directly (no tunnel_port).
     - name: Skip hosts without a forwarded worker API
       ansible.builtin.meta: end_host
-      when: (default_profile is not defined and not (spark_tensorfold | default(false))) or tunnel_port is not defined
+      when: (default_profile is not defined and not (spark_tensorfold | default(false)) and default_backend is not defined) or tunnel_port is not defined
     - name: Install dedicated tunnel service on control
       become: true
       delegate_to: localhost

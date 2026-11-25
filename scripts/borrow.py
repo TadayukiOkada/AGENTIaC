@@ -79,7 +79,7 @@ WATCH = f'{PREFIX}-strata-watch'  # trial backends only; stopped by release like
 
 
 def on_demand(host):
-    return host.get('borrowed') or host.get('ondemand_persistent')
+    return host.get('borrowed') or host.get('ondemand_persistent') or bool(host.get('default_backend'))
 
 
 def serves_strata(host):
@@ -357,8 +357,12 @@ def tensorfold_backend(name):
 
 
 def serves_tensorfold(name, host, backend):
-    """Whether the claim is the host's own TensorFold service: the inventory flag, and no --backend naming another."""
-    return bool(host.get('spark_tensorfold')) and backend in (None, tensorfold_backend(name))
+    """Whether the claim is the host's own TensorFold service: enabled by inventory, unless default_backend overrides a bare claim."""
+    if not host.get('spark_tensorfold'):
+        return False
+    if backend is None:
+        return not host.get('default_backend')
+    return backend == tensorfold_backend(name)
 
 
 def manifest_service(name, backend):
@@ -776,7 +780,7 @@ def weight_guard(name, host, backend):
 
 
 def claim(name, host, switch, idle_minutes, warm_now, backend=None, context=None, engine_options=None, by='claim'):
-    if backend is not None and not serves_strata(host) and manifest_service(name, backend) is None:
+    if backend is not None and not serves_strata(host) and manifest_service(name, backend) is None and not serves_tensorfold(name, host, backend):
         raise SystemExit(undeclared_backend(name, host, backend))
     if serves_tensorfold(name, host, backend):
         # A `spark_tensorfold` host's TensorFold manifest is its own backend, not a claim knob; the route target
@@ -784,6 +788,8 @@ def claim(name, host, switch, idle_minutes, warm_now, backend=None, context=None
         # --backend naming a Strata manifest takes the other branch so the host can serve a Strata trial.
         backend = tensorfold_backend(name)
         context = context or json.loads((ROOT / f'backends/{backend}.json').read_text())['context']
+    elif backend is None and host.get('default_backend'):
+        backend = host['default_backend']
     if backend is None and 'strata_backend' in host:
         # a dedicated worker's default: its inventory strata_backend at that manifest's prepared context
         backend = host['strata_backend']
@@ -793,6 +799,8 @@ def claim(name, host, switch, idle_minutes, warm_now, backend=None, context=None
         # `claim <host>` resolves to the manifest `strata_default_backend` names, at that manifest's own context
         backend = host['strata_default_backend']
         context = context or json.loads((ROOT / f'backends/{backend}.json').read_text())['context']
+    if backend is not None and context is None and manifest_service(name, backend) is not None:
+        context = json.loads((ROOT / f'backends/{backend}.json').read_text()).get('context')
     if backend is not None:
         # F6: before a front, a tunnel or a load (T5.3). Which claims have a declared place on this host to check
         # - and which shapes are not checked yet - is the guard's own answer, not a condition written here.
@@ -854,7 +862,7 @@ def main():
     parser.add_argument('--idle', type=float, help='claim: idle minutes before unload (0 = never); default inventory idle_unload_minutes')
     parser.add_argument('--no-warm', action='store_true', help='claim: do not load the model now')
     parser.add_argument('--backend',
-                        choices=sorted(stem for stem in backend_names.manifests(ROOT) if not stem.startswith('tf-')),
+                        choices=sorted(backend_names.manifests(ROOT)),
                         type=lambda name: backend_names.resolve_in(ROOT, name),  # a retired name still answers
                         help='claim: serve this manifest where it can be served - a Strata host\'s trial root, or the '
                              'service its own manifest declares')

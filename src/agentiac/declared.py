@@ -13,8 +13,10 @@ runs, only what can be checked. A reference is dangling when a file names someth
 declared file defines — a route target on a host the inventory does not have, a
 `default_profile` with no profile, a backend manifest served to a host that is not one.
 """
+import hashlib
 import json
 from pathlib import Path
+import re
 
 import yaml
 
@@ -263,6 +265,11 @@ def references(declared):
 
     for host, facts in declared.nodes.items():
         where = f'infra/inventory.yml host {host}'
+        if 'default_backend' in facts:
+            default_backend = facts['default_backend']
+            dangling(where + ' default_backend', default_backend, set(declared.backends))
+            if default_backend in declared.backends and host not in (declared.backends[default_backend].get('workers') or {}):
+                problems.append(f'{where} default_backend: backends/{default_backend}.json does not name {host} in workers')
         if 'default_profile' in facts:
             dangling(where + ' default_profile', facts['default_profile'], set(declared.profiles))
         if 'gateway_alias' in facts:
@@ -284,6 +291,33 @@ def references(declared):
     for stem, spec in declared.backends.items():
         for host in spec.get('workers', {}):
             dangling(f'backends/{stem}.json worker', host, set(declared.nodes))
+        if 'patches' in spec:
+            where_patches = f'backends/{stem}.json patches'
+            patches = spec.get('patches')
+            if not isinstance(patches, list):
+                problems.append(f'{where_patches}: must be a list of {{path, sha256}} entries')
+            else:
+                root_resolved = Path(declared.root).resolve()
+                for entry in patches:
+                    if not isinstance(entry, dict):
+                        problems.append(f'{where_patches}: each entry must be a mapping')
+                        continue
+                    patch_path = entry.get('path')
+                    patch_sha = entry.get('sha256')
+                    if (not isinstance(patch_path, str) or not patch_path or patch_path.startswith('/')
+                            or '..' in Path(patch_path).parts):
+                        problems.append(f'{where_patches}: {patch_path!r} must be a relative path with no `..`')
+                        continue
+                    if not isinstance(patch_sha, str) or not re.fullmatch(r'[0-9a-f]{64}', patch_sha):
+                        problems.append(f'{where_patches} {patch_path}: sha256 must be 64 lowercase hex characters')
+                        continue
+                    resolved = (root_resolved / patch_path).resolve()
+                    if not resolved.is_relative_to(root_resolved) or not resolved.is_file():
+                        problems.append(f'{where_patches} {patch_path}: file is missing')
+                    else:
+                        actual = hashlib.sha256(resolved.read_bytes()).hexdigest()
+                        if actual != patch_sha:
+                            problems.append(f'{where_patches} {patch_path}: sha256 {actual} does not match {patch_sha}')
 
     callable_aliases = set(declared.gateway_models) | declared.rendered_aliases
     for model_id in declared.pi_models:

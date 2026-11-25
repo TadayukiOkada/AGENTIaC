@@ -29,6 +29,7 @@ got from a declared file. Where it cannot answer it says `unknown` and names the
 same shape `doctor` uses.
 """
 import copy
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -124,6 +125,11 @@ def strata_shaped(manifest):
     checkpoint (reuse) or dying in the formatter (plan).
     """
     return bool(manifest.get('source_version') or manifest.get('source_revision') or manifest.get('files'))
+
+
+def container_shaped(manifest):
+    """Whether this manifest declares a container-built engine (`build` + `engine`)."""
+    return isinstance(manifest.get('build'), dict) and isinstance(manifest.get('engine'), dict)
 
 
 def not_strata_shaped(host, backend_id, manifest):
@@ -238,6 +244,41 @@ def drafter_pack(manifest, host):
         'drafter': asked, 'path': pack['path'], 'size': pack['size'], 'sha256': pack['sha256']}
 
 
+def _container_reuse_candidates(graph, host, manifest):
+    """Held backends on HOST that share the same verified loose `model.directory` and pinned bytes."""
+    from agentiac import identities
+    out, why_not = [], []
+    model_dir = identities.model_directory(manifest)
+    wanted = asks(manifest)
+    if not model_dir or not wanted:
+        return {'candidates': [], 'download_bytes': weight_bytes(manifest), 'why_not': [], 'packs': []}
+    project_root = (graph.nodes.get(host) or {}).get('project_root', '/home/tokada/agent-infra')
+    shared_path = f"{project_root.rstrip('/')}/{model_dir}"
+    for state, line in ledger_lines(graph, host):
+        source_id = line.get('backend')
+        if not source_id or source_id == name_of(graph, manifest):
+            continue
+        try:
+            source = manifest_for(graph, source_id)
+        except SystemExit as missing:
+            why_not.append(f'{source_id} (ledger line {state}): the manifest is not in backends/ ({missing})')
+            continue
+        if identities.model_directory(source) != model_dir:
+            continue
+        missing, mismatched = supplies(source, manifest)
+        if missing or mismatched:
+            continue
+        if line.get('form') != 'full':
+            why_not.append(f'{source_id} ({state} line): shares {model_dir}, but the ledger calls it `form: {line.get("form")}`')
+            continue
+        out.append({'backend': source_id, 'state': state, 'root': shared_path,
+                    'engine_version': (source.get('engine') or {}).get('version'),
+                    'bytes': weight_bytes(manifest), 'files': len(wanted)})
+    out.sort(key=lambda entry: (entry['engine_version'] or '', entry['backend']))
+    return {'candidates': out, 'download_bytes': 0 if out else weight_bytes(manifest),
+            'why_not': why_not, 'packs': []}
+
+
 def reuse_candidates(graph, host, manifest):
     """Roots on HOST the ledger calls full whose manifest pins the identical bytes MANIFEST pins.
 
@@ -245,6 +286,8 @@ def reuse_candidates(graph, host, manifest):
     without a reuse source pulls from upstream, and `why_not` names each root that matched on weights but is not a
     source — a `thin` line being the important one.
     """
+    if container_shaped(manifest) and not strata_shaped(manifest):
+        return _container_reuse_candidates(graph, host, manifest)
     out, why_not = [], []
     pack = drafter_pack(manifest, host)
     if not asks(manifest):
@@ -423,10 +466,138 @@ def measure_alias(graph, host, backend_id):
 
 
 
+def _component_for_backend(graph, host, backend_id):
+    if not backend_id:
+        return None
+    for entry in graph.components:
+        pin = entry.get('pin') or {}
+        if pin.get('lock') == f'backends/{backend_id}.json' and host in (entry.get('hosts') or []):
+            return entry
+    return None
+
+
+def _container_plan(graph, host, backend_id, manifest):
+    """The ordered reading of a container-built engine upgrade or candidate on HOST."""
+    facts = graph.nodes.get(host, {})
+    engine_block = manifest.get('engine') or {}
+    worker_cfg = (manifest.get('workers') or {}).get(host) or {}
+    service = worker_cfg.get('service') if isinstance(worker_cfg, dict) else None
+    patches = manifest.get('patches') if isinstance(manifest.get('patches'), list) else []
+    tf_default = None
+    if facts.get('spark_tensorfold'):
+        try:
+            tf_default = backend_names.tensorfold_backend(graph.backends, host)
+        except ValueError:
+            tf_default = None
+    current_backend = (facts.get('default_backend') or tf_default
+                       or facts.get('strata_default_backend') or facts.get('strata_backend'))
+    component = _component_for_backend(graph, host, current_backend) or _component_for_backend(graph, host, backend_id)
+    found = reuse_candidates(graph, host, manifest)
+    state_now, line_now = ledger_line(graph, host, backend_id)
+    state_current, _ = ledger_line(graph, host, current_backend)
+    blockers, notes = [], []
+
+    if host not in (manifest.get('workers') or {}):
+        blockers.append(f'backends/{backend_id}.json does not name {host} in `workers`')
+    if not isinstance(service, dict) or not all(service.get(k) for k in ('unit', 'port', 'root')):
+        blockers.append(f'backends/{backend_id}.json declares no complete `workers.{host}.service` (`unit`, `port`, `root`)')
+    if state_now is None:
+        blockers.append(f'infra/retention.yml {host} names nothing for {backend_id}: a preparation starts as a '
+                        f'`candidate:` line with `form: full`')
+    if line_now is not None and line_now.get('form') not in (None, 'full'):
+        blockers.append(f'infra/retention.yml calls {backend_id} `form: {line_now["form"]}` on {host}')
+    patches_valid = True
+    root_resolved = Path(graph.root).resolve()
+    for entry in patches:
+        if not isinstance(entry, dict) or not isinstance(entry.get('path'), str) or not isinstance(entry.get('sha256'), str):
+            patches_valid = False
+            blockers.append(f'backends/{backend_id}.json has a malformed `patches` entry')
+            continue
+        patch_path = (root_resolved / entry['path']).resolve()
+        if not patch_path.is_relative_to(root_resolved) or not patch_path.is_file():
+            patches_valid = False
+            blockers.append(f'pinned patch {entry["path"]} declared by backends/{backend_id}.json is missing')
+            continue
+        actual = hashlib.sha256(patch_path.read_bytes()).hexdigest()
+        if actual != entry['sha256']:
+            patches_valid = False
+            blockers.append(f'pinned patch {entry["path"]} has sha256 {actual}, manifest declares {entry["sha256"]}')
+    if found['candidates']:
+        first = found['candidates'][0]
+        notes.append(f'shared model.directory matches {first["backend"]} ({first["state"]}); 0 GiB weight download needed')
+    else:
+        notes.append(f'nothing held on {host} shares this model.directory: {round(found["download_bytes"] / GIB, 1)} GiB weight download')
+    if patches:
+        notes.append(f'{len(patches)} pinned patch(es) will be SHA-256 verified and applied before Docker build')
+    for reason in found['why_not']:
+        notes.append(f'reuse: {reason}')
+
+    service_root = service.get('root') if isinstance(service, dict) else None
+    steps = [
+        {'step': 'declare the backend and patches',
+         'where': f'backends/{backend_id}.json',
+         'state': 'done' if (host in (manifest.get('workers') or {}) and isinstance(service, dict) and patches_valid) else 'open',
+         'what': f'engine {engine_block.get("version")} ({str(engine_block.get("revision") or "")[:12]}), {len(patches)} patch(es), service.root {service_root or "unset"}'},
+        {'step': 'declare what the host holds',
+         'where': f'infra/retention.yml {host}',
+         'state': 'done' if state_now else 'open',
+         'what': f'a `candidate:` line for {backend_id} with `form: full`, plus area entries for service.root and image.tag'},
+        {'step': 'read the host before preparing',
+         'where': 'read-only',
+         'state': 'open',
+         'what': f'{cli_name()} ops storage {host} --candidates, then {cli_name()} ops prepare {host} --backend {backend_id} --check'},
+        {'step': 'weights',
+         'where': 'the worker',
+         'state': 'done' if found['candidates'] else 'open',
+         'what': f'shared model.directory ready via {found["candidates"][0]["backend"]}' if found['candidates'] else f'{cli_name()} ops download {host} --model <profile>'},
+        {'step': 'prepare',
+         'where': 'the worker',
+         'state': 'open',
+         'what': f'{cli_name()} ops prepare {host} --backend {backend_id}'},
+        {'step': 'measure before applying',
+         'where': 'the host',
+         'state': 'open',
+         'what': f'{cli_name()} claim {host} --backend {backend_id} (no --route), then the ladder and the Suite on {measure_alias(graph, host, backend_id)}'},
+        {'step': 'move what a claim resolves to',
+         'where': f'infra/inventory.yml {host} default_backend',
+         'state': 'done' if current_backend == backend_id else 'open',
+         'what': f'{current_backend or "unset"} -> {backend_id} (keep spark_tensorfold / N-1 rollback)'},
+        {'step': 'move the pin & ledger',
+         'where': f'infra/components.yml & infra/retention.yml {host}',
+         'state': 'open',
+         'what': f'{backend_id} to `serving:` and {current_backend or "prior"} to `rollback:`'},
+        {'step': 'deploy and claim',
+         'where': 'control, then the host',
+         'state': 'open',
+         'what': f'{cli_name()} ops deploy, then {cli_name()} claim {host}'},
+        {'step': 'verify',
+         'where': 'read-only',
+         'state': 'open',
+         'what': f'{cli_name()} warm {host}, {cli_name()} ops drift, {cli_name()} doctor'},
+    ]
+    return {
+        'host': host,
+        'backend': backend_id,
+        'shape': 'container',
+        'engine': {'version': engine_block.get('version'), 'revision': engine_block.get('revision'),
+                   'ggml_revision': None, 'cuda_toolkit_major': None},
+        'patches': [{'path': p.get('path'), 'sha256': p.get('sha256')} for p in patches if isinstance(p, dict)],
+        'weights': {'files': len(asks(manifest)), 'bytes': weight_bytes(manifest)},
+        'root': {'key': 'service.root', 'path': service_root},
+        'current': {'backend': current_backend,
+                    'component': component.get('id') if component else None,
+                    'pin': (component.get('pin') if component else None),
+                    'ledger_state': state_now, 'current_ledger_state': state_current},
+        'reuse': found, 'blockers': blockers, 'notes': notes, 'steps': steps,
+    }
+
+
 def plan(graph, host, backend_id):
     """The ordered reading of an upgrade on HOST: declared facts, blockers, and the steps with their commands."""
     manifest = manifest_for(graph, backend_id)
     if not strata_shaped(manifest):
+        if container_shaped(manifest):
+            return _container_plan(graph, host, backend_id, manifest)
         raise SystemExit(not_strata_shaped(host, name_of(graph, manifest), manifest))
     key, root = trial_root(graph, host, manifest)
     current_backend = graph.nodes.get(host, {}).get('strata_backend')

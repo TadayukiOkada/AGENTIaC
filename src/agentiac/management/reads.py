@@ -73,6 +73,7 @@ def node_rows(root, ledger=None):
                           default_profile=facts.get('default_profile'),
                           spark_tensorfold=facts.get('spark_tensorfold'),
                           tensorfold_backend=tensorfold_backend(backends, node_id, facts),
+                          default_backend=facts.get('default_backend'),
                           strata_default_backend=facts.get('strata_default_backend'),
                           runtime_image=facts.get('runtime_image'),
                           hardware=hardware_dto(record),

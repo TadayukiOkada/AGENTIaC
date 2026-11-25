@@ -11,6 +11,10 @@
     # The choice is the backend that was asked for, not the host. A host can hold both a pinned TensorFold service
     # AND a declared Strata trial root: a preparation without --backend keeps preparing TensorFold, while an explicit
     # `--backend strata-...` prepares Strata instead of letting `spark_tensorfold` alone decide.
+    - name: Use the host's default_backend when no --backend was given
+      ansible.builtin.set_fact:
+        backend_id: '{{ default_backend }}'
+      when: backend_id is not defined and default_backend is defined and default_backend != ''
     - name: TensorFold is what Spark prepares when nothing else was asked for
       ansible.builtin.set_fact:
         prepare_tensorfold: >-

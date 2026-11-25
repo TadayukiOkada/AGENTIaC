@@ -1812,6 +1812,17 @@
             "title": "Borrowed",
             "type": "boolean"
           },
+          "default_backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Backend"
+          },
           "default_profile": {
             "anyOf": [
               {

@@ -75,6 +75,7 @@ class NodeDTO(BaseModel):
     default_profile: Optional[str] = None
     spark_tensorfold: Optional[bool] = None
     tensorfold_backend: Optional[str] = None   # the manifest a spark_tensorfold node serves (backend_names)
+    default_backend: Optional[str] = None
     strata_default_backend: Optional[str] = None
     runtime_image: Optional[str] = None
     hardware: Optional[HardwareDTO] = None

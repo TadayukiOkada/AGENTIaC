@@ -74,6 +74,7 @@ def spec_of(manifest, prefix):
             'dockerfile': build.get('dockerfile', 'Dockerfile'), 'context': build.get('context', '.'),
             'dockerfile_sha256': build.get('dockerfile_sha256'), 'args': build.get('args') or {},
             'target': build.get('target'), 'base_images': build.get('base_images') or {},
+            'patches': manifest.get('patches') if 'patches' in manifest else [],
             'free_gib': build.get('free_gib', DEFAULT_FREE_GIB), 'tag': image['tag'], 'id': image.get('id')}
     if not isinstance(spec['repository'], str) or not spec['repository'].startswith('https://'):
         raise SystemExit('`build.repository` (or `engine.repository`) must be an https URL')
@@ -102,6 +103,22 @@ def spec_of(manifest, prefix):
         raise SystemExit('`build.target` must be a stage name')
     if not isinstance(spec['free_gib'], int) or isinstance(spec['free_gib'], bool) or spec['free_gib'] < 1:
         raise SystemExit('`build.free_gib` must be a whole number of GiB')
+    patches = spec['patches']
+    if not isinstance(patches, list):
+        raise SystemExit('`patches` must be a list of {path, sha256} entries')
+    normalized_patches = []
+    for entry in patches:
+        if not isinstance(entry, dict):
+            raise SystemExit('each `patches` entry must be a mapping with `path` and `sha256`')
+        patch_path = entry.get('path')
+        patch_sha = entry.get('sha256')
+        if (not isinstance(patch_path, str) or not patch_path or patch_path.startswith('/')
+                or '..' in Path(patch_path).parts):
+            raise SystemExit('`patches` entries must declare a relative `path` with no `..`')
+        if not isinstance(patch_sha, str) or not SHA256.match(patch_sha):
+            raise SystemExit(f'`patches` entry {patch_path} must declare a 64-hex lowercase `sha256`')
+        normalized_patches.append({'path': patch_path, 'sha256': patch_sha})
+    spec['patches'] = normalized_patches
     return spec
 
 
@@ -122,11 +139,43 @@ def fetch_source(spec, directory):
         git(directory, 'remote', 'add', 'origin', spec['repository'])
     if git(directory, 'remote', 'get-url', 'origin') != spec['repository']:
         raise SystemExit(f'{directory} fetches from another repository than {spec["repository"]}')
+    if spec.get('patches'):
+        if not head_is(directory, spec['revision']):
+            git(directory, 'fetch', '-q', '--depth', '1', 'origin', spec['revision'])
+        # Patched builds re-apply pinned diffs onto a clean detached tree at spec['revision'].
+        git(directory, 'checkout', '-q', '-f', '--detach', spec['revision'])
+        git(directory, 'clean', '-q', '-fdx')
+        if not head_is(directory, spec['revision']) or git(directory, 'status', '--porcelain', '--ignored'):
+            raise SystemExit('the source checkout could not be reset to the pinned revision before patching')
+        return
     if not head_is(directory, spec['revision']):
         git(directory, 'fetch', '-q', '--depth', '1', 'origin', spec['revision'])
         git(directory, 'checkout', '-q', '--detach', 'FETCH_HEAD')
     if not head_is(directory, spec['revision']) or git(directory, 'status', '--porcelain', '--ignored'):
         raise SystemExit('the source checkout is not the pinned revision, or it is not clean')
+
+
+def apply_patches(spec, source, patches_root):
+    """Verify every pinned patch by SHA-256 and apply it cleanly onto SOURCE."""
+    patches = spec.get('patches') or []
+    if not patches:
+        return
+    if patches_root is None:
+        raise SystemExit('the manifest declares `patches` but no --patches-root was passed')
+    root_resolved = Path(patches_root).resolve()
+    for entry in patches:
+        patch_file = (root_resolved / entry['path']).resolve()
+        if not patch_file.is_relative_to(root_resolved) or not patch_file.is_file():
+            raise SystemExit(f'`patches` file {entry["path"]} is missing under {root_resolved}')
+        digest = hashlib.sha256(patch_file.read_bytes()).hexdigest()
+        if digest != entry['sha256']:
+            raise SystemExit(f'`patches` file {entry["path"]} has SHA-256 {digest}, manifest declares {entry["sha256"]}')
+        for argv in (['git', '-C', str(source), 'apply', '--check', str(patch_file)],
+                     ['git', '-C', str(source), 'apply', str(patch_file)]):
+            done = run(argv, capture_output=True, text=True)
+            if done.returncode != 0:
+                detail = (done.stderr or done.stdout or '').strip()
+                raise SystemExit(f'could not apply `patches` entry {entry["path"]} at {spec["revision"][:8]}: {detail}')
 
 
 def inside(source, relative, what):
@@ -335,6 +384,8 @@ def build_input(spec, bases):
     """One hash of everything that decides the image's bytes besides the source revision and the Dockerfile."""
     declared = {'bases': bases, 'args': {k: str(v) for k, v in spec['args'].items()}, 'target': spec['target'],
                 'dockerfile': spec['dockerfile'], 'context': spec['context']}
+    if spec.get('patches'):
+        declared['patches'] = [{'path': entry['path'], 'sha256': entry['sha256']} for entry in spec['patches']]
     return hashlib.sha256(json.dumps(declared, sort_keys=True).encode()).hexdigest()
 
 
@@ -394,7 +445,7 @@ def model_state(manifest, root):
             'missing': missing[:5], 'verified_marker': marker.is_file()}
 
 
-def prepare(manifest, root, prefix):
+def prepare(manifest, root, prefix, patches_root=None):
     spec = spec_of(manifest, prefix)
     base = root / 'container-prepare'
     work = base / manifest['id']
@@ -409,6 +460,7 @@ def prepare(manifest, root, prefix):
             fcntl.flock(lock, fcntl.LOCK_EX)
         source = work / 'source'
         fetch_source(spec, source)
+        apply_patches(spec, source, patches_root)
         text = check_dockerfile(spec, source)
         print(f'source {spec["revision"][:8]}: {spec["dockerfile"]} matches the manifest', flush=True)
         frontend, references = build_images(text, spec['args'])
@@ -435,10 +487,13 @@ def prepare(manifest, root, prefix):
         model = model_state(manifest, root)
         print(f'model: {model["state"]}' + (f' ({", ".join(model["missing"])})' if model.get('missing') else ''),
               flush=True)
+        source_record = {'repository': spec['repository'], 'revision': spec['revision'],
+                         'dockerfile': spec['dockerfile'], 'dockerfile_sha256': spec['dockerfile_sha256']}
+        if spec['patches']:
+            source_record['patches'] = spec['patches']
         result = {'backend': manifest['id'], 'image': {'tag': spec['tag'], 'id': image, 'how': how,
                                                        'tagged': not mismatch},
-                  'source': {'repository': spec['repository'], 'revision': spec['revision'],
-                             'dockerfile': spec['dockerfile'], 'dockerfile_sha256': spec['dockerfile_sha256']},
+                  'source': source_record,
                   'pinned': bases, 'model': model,
                   'time': datetime.datetime.now(datetime.timezone.utc).isoformat()}
         (work / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
@@ -457,9 +512,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('manifest', type=Path)
     parser.add_argument('root', type=Path, help='project root on the worker')
+    parser.add_argument('--patches-root', type=Path, default=None, help='directory holding pinned patch files')
     parser.add_argument('--resource-prefix', required=True, help="this site's resource_prefix (infra/inventory.yml)")
     args = parser.parse_args()
-    return prepare(json.loads(args.manifest.read_text()), args.root, args.resource_prefix)
+    return prepare(json.loads(args.manifest.read_text()), args.root, args.resource_prefix,
+                   patches_root=args.patches_root)
 
 
 if __name__ == '__main__':
