@@ -252,7 +252,7 @@ def _container_reuse_candidates(graph, host, manifest):
     wanted = asks(manifest)
     if not model_dir or not wanted:
         return {'candidates': [], 'download_bytes': weight_bytes(manifest), 'why_not': [], 'packs': []}
-    project_root = (graph.nodes.get(host) or {}).get('project_root', '/home/tokada/agent-infra')
+    project_root = (graph.nodes.get(host) or {}).get('project_root') or (getattr(graph, 'vars', None) or {}).get('project_root') or '/srv/agentiac'
     shared_path = f"{project_root.rstrip('/')}/{model_dir}"
     for state, line in ledger_lines(graph, host):
         source_id = line.get('backend')
