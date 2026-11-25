@@ -31,13 +31,23 @@ agentiac code --loop-guard             # stop pi after 10/20 repeated bash comma
 agentiac code --thinking high          # starting thinking level (targets with a thinking switch)
 ```
 
-`local-any` picks the worker with the fewest visible pi sessions on the launch host, using
-pool order for ties. The default pool is every tracked pi model named `<node>-worker`
-(one fixed node each), in the order of `agents/pi/models.json`. Set
-`AGENTIAC_LOCAL_POOL` to a comma-separated list of tracked pi model IDs to override it.
-`local-any` excludes sessions launched before the launcher started setting `AGENTIAC_PI_MODEL`.
-`--resume -m local-any` picks again. If it chooses a different worker, the old node's
-prefix cache is not reused.
+`local-any` picks the pool member whose node has the fewest pi sessions on the launch host,
+using pool order for ties.
+
+- **What counts**: a session counts against the node it runs on, whatever alias started it.
+  That includes `<node>-worker-<model>`, a route target or short alias, `local-coder` (its
+  routed node), and `router` (its low model's node).
+- **Launches still starting**: a launch that has picked but not yet started pi counts too. It
+  records its pick under the pi agent dir, and picks are made one at a time.
+- **Default pool**: the tracked `<node>-worker` model of every inventory node that is not
+  `borrowed`, in the order of `agents/pi/models.json`. A borrowed host is never picked unless
+  you name it, because a request there makes its front load a model on someone else's machine.
+- **Override**: set `AGENTIAC_LOCAL_POOL` to a comma-separated list of tracked fixed-node worker
+  models (`<node>-worker[-<model>]`). A cloud or control-host model is refused.
+- **Not counted**: sessions launched before the launcher started setting `AGENTIAC_PI_MODEL`,
+  and sessions of other users.
+- **Resume**: `--resume -m local-any` picks again. If it chooses a different worker, the old
+  node's prefix cache is not reused.
 
 Targets that declare a verified thinking switch (`thinking` in `gateway/local-coder.json`)
 start at their configured `thinking_start` level and allow `/thinking` inside `pi` (or
