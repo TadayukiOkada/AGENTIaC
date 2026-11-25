@@ -297,6 +297,7 @@ export type NodeDTO = {
   "default_profile"?: string | null
   "spark_tensorfold"?: boolean | null
   "tensorfold_backend"?: string | null
+  "default_backend"?: string | null
   "strata_default_backend"?: string | null
   "runtime_image"?: string | null
   "hardware"?: HardwareDTO | null
