@@ -113,6 +113,11 @@ def other_serving_units(host, unit, name=None):
     return sorted(other for other in units if other and other != unit)
 
 
+# What a claim writes into a declared service's root: a secret file may not take one of these names.
+SERVICE_FILES = {'api.key', 'service.json', 'launch-args.json', 'backend-manifest.json', 'worker.py', 'status.json',
+                 'status.json.tmp', 'memory.jsonl', 'trial-watch.py', 'watch', 'manifest.json', 'ondemand'}
+
+
 def service_spec(manifest, name):
     """How MANIFEST says its engine is served on host NAME, or None when it says nothing.
 
@@ -140,6 +145,7 @@ def service_spec(manifest, name):
     unit, port, root = declared_service.get('unit'), declared_service.get('port'), declared_service.get('root')
     container, status_path = declared_service.get('container'), declared_service.get('status_path')
     worker, start_timeout_s = declared_service.get('worker'), declared_service.get('start_timeout_s')
+    secret_files = declared_service.get('secret_files')
     problems = []
     if (not isinstance(unit, str) or not unit.startswith(f'{PREFIX}-')
             or not re.fullmatch(r'[a-z0-9][a-z0-9-]*', unit.removeprefix(f'{PREFIX}-'))):
@@ -160,13 +166,23 @@ def service_spec(manifest, name):
                                or not re.fullmatch(r'[a-z0-9][a-z0-9._-]*\.py', worker)):
         problems.append(('worker', 'when declared, must be a `*.py` under `scripts/`: the script this service runs on '
                                    'the host, which is where an engine\'s own launch belongs'))
+    if secret_files is not None and (
+            not isinstance(secret_files, list) or not secret_files
+            or not all(isinstance(entry, dict) and set(entry) == {'path', 'text'}
+                       and isinstance(entry['path'], str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,99}', entry['path'])
+                       and entry['path'] not in SERVICE_FILES
+                       and isinstance(entry['text'], str) and '{api_key}' in entry['text'] and len(entry['text']) <= 4096
+                       for entry in secret_files)
+            or len({entry['path'] for entry in secret_files}) != len(secret_files)):
+        problems.append(('secret_files', 'when declared, is a list of {path, text}: a file name of its own in the root '
+                                         '(not one the claim writes) and a text holding `{api_key}`'))
     if problems:
         raise SystemExit(explain(f'the service this manifest declares for {name} is not usable',
                                  [f'`{key}` {problem}' for key, problem in problems],
                                  f'grep -n -A 12 "workers" backends/<manifest>.json',
                                  'fix the `service:` block, or drop it and let the Strata rules serve this manifest'))
     return {'unit': unit, 'port': port, 'root': root.rstrip('/'), 'start_timeout_s': start_timeout_s,
-            'container': container, 'status_path': status_path, 'worker': worker}
+            'container': container, 'status_path': status_path, 'worker': worker, 'secret_files': secret_files}
 
 
 def declared_units(name):
@@ -523,7 +539,8 @@ def prepare_backend(name, host, config, backend=None):
             failed = put(host, worker_src, f'{root}/worker.py')
         facts = json.dumps({'unit': service['unit'], 'port': service['port'], 'root': root,
                             'container': service['container'], 'status_path': service['status_path'],
-                            'start_timeout_s': service['start_timeout_s']}, indent=2) + '\n'
+                            'start_timeout_s': service['start_timeout_s'],
+                            'secret_files': service['secret_files']}, indent=2) + '\n'
         if not failed:
             failed = on_host(host, [f'umask 077 && cat > {root}/service.json'], input=facts).returncode
         if failed:

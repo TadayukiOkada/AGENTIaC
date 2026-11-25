@@ -293,7 +293,16 @@ class TensorFoldDeclarationTests(unittest.TestCase):
         for path in sorted((SITE / 'backends').glob('*.launch.json')):
             stem = path.name.removesuffix('.launch.json')
             targets = [name for name, spec in graph.route['targets'].items() if spec.get('backend') == stem]
-            self.assertTrue(targets, stem)
+            if not targets:
+                # A probe before the gateway knows the engine (docs/lifecycle.md Stage 1c): the claim needs the launch
+                # file, the route target comes with gateway registration. Only a manifest that declares its service
+                # can be claimed that way, and its own argument split must still hold.
+                manifest = graph.backends.get(stem) or {}
+                self.assertTrue(any('service' in (worker or {}) for worker in (manifest.get('workers') or {}).values()),
+                                f'{stem}: a launch file needs a route target, or a declared service to be probed '
+                                'before gateway registration')
+                self.assertFalse(set(manifest.get('class_args') or []) & set(manifest.get('config_args') or []), stem)
+                continue
             launch = json.loads(path.read_text())
             env = [launch[i + 1] for i, a in enumerate(launch) if a == '--env'
                    and launch[i + 1].startswith('TF_FLASHNEXT')]

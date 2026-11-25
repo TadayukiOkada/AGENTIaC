@@ -212,6 +212,8 @@ class TensorFoldPinTests(unittest.TestCase):
             stem = launch_path.name.removesuffix('.launch.json')
             manifest = json.loads((SITE / f'backends/{stem}.json').read_text())
             launch = json.loads(launch_path.read_text())
+            if 'recipe' not in manifest:
+                continue          # TensorFold's recipe build; a declared container build is checked below
             self.assertIn(manifest['image']['id'], launch)
             self.assertIn(manifest['image']['id'], (ROOT / 'scripts/spark-tensorfold-worker.py').read_text())
             self.assertTrue(any(f"source={INVENTORY['vars']['project_root']}/{manifest['model']['directory']},"
@@ -223,6 +225,20 @@ class TensorFoldPinTests(unittest.TestCase):
             weights = [f for f in manifest['model']['files'] if f['path'].endswith('.safetensors')]
             self.assertTrue(weights)
             self.assertTrue(all(len(f.get('sha256', '')) == 64 for f in weights))
+
+    def test_a_declared_container_launch_runs_the_pinned_image_on_the_pinned_weights(self):
+        for launch_path in sorted((SITE / 'backends').glob('*.launch.json')):
+            stem = launch_path.name.removesuffix('.launch.json')
+            manifest = json.loads((SITE / f'backends/{stem}.json').read_text())
+            if 'build' not in manifest:
+                continue
+            launch = json.loads(launch_path.read_text())
+            with self.subTest(stem):
+                # the image by its id (a tag is not a pin), and the weights from the directory the manifest pins
+                self.assertIn(manifest['image']['id'], launch)
+                self.assertTrue(any(f"source={INVENTORY['vars']['project_root']}/{manifest['model']['directory']},"
+                                    in arg for arg in launch))
+                self.assertTrue(all(len(f.get('sha256', '')) == 64 for f in manifest['model']['files']))
 
 
 class PlaybookTests(unittest.TestCase):
