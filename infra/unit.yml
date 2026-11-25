@@ -7,6 +7,8 @@
     units:
       ondemand: {file: '{{ resource_prefix }}-ondemand.service', run: true}
       spark-tensorfold: {file: '{{ resource_prefix }}-spark-tensorfold.service', run: false}
+      # any engine a manifest serves from a container (`service.worker: container-service-worker.py`); the claim starts it
+      container-service: {file: '{{ resource_prefix }}-container-service.service', run: false}
   tasks:
     - name: Require an explicit host
       ansible.builtin.import_tasks: tasks/require-limit.yml

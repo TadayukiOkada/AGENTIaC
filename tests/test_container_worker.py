@@ -39,7 +39,8 @@ case "$1" in
     for pid in $CONTAINER_PIDS; do echo $pid; done ;;
   rm) exit 0 ;;
   stop) exit "${STOP_STATUS:-0}" ;;
-  run) : > "$STARTED"; exit "${RUN_STATUS:-0}" ;;
+  run) if [ -n "$SECRET_EXPECT" ]; then if [ -f "$SECRET_EXPECT" ]; then echo present; else echo absent; fi > "$SECRET_SEEN"; fi
+       : > "$STARTED"; exit "${RUN_STATUS:-0}" ;;
 esac
 '''
 NVIDIA = '''#!/bin/sh
@@ -49,10 +50,12 @@ if [ -f "$STARTED" ]; then echo "$GPU_PIDS_AFTER"; else echo "$GPU_PIDS"; fi
 
 class Handler(BaseHTTPRequestHandler):
     paths = []
+    authorizations = []
     body = b'{"status":"ok"}'
 
     def do_GET(self):
         Handler.paths.append(self.path)
+        Handler.authorizations.append(self.headers.get('Authorization'))
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
@@ -93,9 +96,10 @@ class WorkerFixture(unittest.TestCase):
         (self.root / 'backend-manifest.json').write_text(json.dumps(self.manifest))
         (self.root / 'launch-args.json').write_text(json.dumps(self.launch))
 
-    def start(self, **env):
+    def start(self, umask=None, **env):
         self.process = subprocess.Popen([sys.executable, str(self.root / 'worker.py')],
-                                        env={**self.env, **env}, stderr=subprocess.PIPE, text=True)
+                                        env={**self.env, **env}, stderr=subprocess.PIPE, text=True,
+                                        **({'umask': umask} if umask is not None else {}))
         self.addCleanup(self.process.kill)
         return self.process
 
@@ -120,6 +124,7 @@ class WorkerFixture(unittest.TestCase):
 
     def serve(self):
         Handler.paths = []
+        Handler.authorizations = []
         Handler.body = b'{"status":"ok"}'
         server = HTTPServer(('127.0.0.1', self.port), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -275,6 +280,102 @@ class EngineAgnosticTests(unittest.TestCase):
         for hardcoded in ('spark-tensorfold', 'infernix-serve', '18885', '3442529299de2bed', '100*(1<<30)', '--gpus'):
             self.assertNotIn(hardcoded, source, hardcoded)
 
+
+
+class SecretTests(WorkerFixture):
+    KEY = 'k3y-0123456789abcdef'
+    SECRET = [{'path': 'engine-secrets.toml', 'text': '[serve]\napi-key = "{api_key}"\n'}]
+
+    def ready_with(self, key_text):
+        (self.root / 'api.key').write_text(key_text)
+        self.start()
+        self.wait_for_phase('loading')
+        self.serve()
+        self.wait_for_phase('ready')
+        self.stop()
+        return set(Handler.authorizations)
+
+    def test_the_readiness_route_is_asked_with_the_key_as_a_bearer_token(self):
+        self.assertEqual(self.ready_with(self.KEY + '\n'), {f'Bearer {self.KEY}'})
+
+    def test_a_name_equals_value_key_file_is_read_as_its_value(self):
+        self.assertEqual(self.ready_with(f'  # written by the claim\nLITELLM_MASTER_KEY={self.KEY}\n'),
+                         {f'Bearer {self.KEY}'})
+
+    def test_a_bare_key_with_base64_padding_stays_whole(self):
+        self.assertEqual(self.ready_with('abcdefghijklmnop==\n'), {'Bearer abcdefghijklmnop=='})
+
+    def test_declared_secret_files_exist_at_the_launch_written_0600_whatever_the_umask(self):
+        (self.root / 'api.key').write_text(self.KEY + '\n')
+        stale = self.root / 'engine-secrets.toml'
+        stale.write_text('old')
+        stale.chmod(0o644)                                  # replaced, not reused with its looser mode
+        self.write(secret_files=self.SECRET)
+        seen = self.root / 'secret-seen'
+        self.start(umask=0o022, SECRET_EXPECT=str(stale), SECRET_SEEN=str(seen))
+        self.wait_for_phase('loading')
+        self.assertEqual(seen.read_text().strip(), 'present')          # it was there when `docker run` ran
+        self.assertEqual(stale.read_text(), f'[serve]\napi-key = "{self.KEY}"\n')
+        self.assertEqual(stale.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(sorted(p.name for p in self.root.glob('.*.tmp')), [])
+        self.stop()
+
+    def refused(self, reason, **write):
+        self.write(**write)
+        process = self.start()
+        self.assertIn(reason, self.wait_for_phase('failed')['reason'])
+        process.wait(timeout=25)
+        # refused before Docker was asked anything: no inspect, no rm, no run
+        self.assertEqual(self.calls(), [])
+
+    def test_secret_files_without_a_usable_key_refuse_before_docker_is_touched(self):
+        for key in (None, 'short', 'has "quote" and spaces 0123456789'):
+            with self.subTest(key=key):
+                for name in ('api.key', 'calls', 'status.json'):
+                    (self.root / name).unlink(missing_ok=True)
+                if key is not None:
+                    (self.root / 'api.key').write_text(key + '\n')
+                self.refused('no usable key', secret_files=self.SECRET)
+                self.assertFalse((self.root / 'engine-secrets.toml').exists())
+
+    def test_a_symlinked_key_file_is_not_followed(self):
+        outside = self.root / 'outside.key'
+        outside.write_text(self.KEY + '\n')
+        (self.root / 'api.key').symlink_to(outside)
+        self.refused('no usable key', secret_files=self.SECRET)
+
+    def test_a_secret_file_may_not_replace_a_file_the_claim_wrote(self):
+        (self.root / 'api.key').write_text(self.KEY + '\n')
+        for name in ('launch-args.json', 'ondemand', 'x' * 101):
+            with self.subTest(name=name):
+                (self.root / 'calls').unlink(missing_ok=True)
+                self.refused('secret_files must be', secret_files=[{'path': name, 'text': '{api_key}'}])
+        self.assertEqual(json.loads((self.root / 'launch-args.json').read_text()), self.launch)
+
+    def test_one_bad_entry_means_no_entry_is_written(self):
+        (self.root / 'api.key').write_text(self.KEY + '\n')
+        self.refused('secret_files must be', secret_files=[*self.SECRET, {'path': 'b.toml', 'text': 'no key'}])
+        self.assertFalse((self.root / 'engine-secrets.toml').exists())
+
+    def test_a_write_that_fails_leaves_no_copy_of_the_key(self):
+        (self.root / 'api.key').write_text(self.KEY + '\n')
+        (self.root / 'engine-secrets.toml').mkdir()        # os.replace onto a directory fails
+        self.write(secret_files=self.SECRET)
+        process = self.start()
+        self.wait_for_phase('failed')
+        process.wait(timeout=25)
+        self.assertEqual(sorted(p.name for p in self.root.glob('.*.tmp')), [])
+        self.assertEqual([call for call in self.calls() if call.startswith(('run', 'rm'))], [])
+
+    def test_the_worker_and_the_claim_reserve_the_same_names(self):
+        import ast
+
+        def literal(path, name):
+            tree = ast.parse(path.read_text())
+            return next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+                        and any(getattr(target, 'id', None) == name for target in node.targets))
+        self.assertEqual(literal(ROOT / 'scripts/container-service-worker.py', 'RESERVED'),
+                         literal(ROOT / 'scripts/borrow.py', 'SERVICE_FILES'))
 
 if __name__ == '__main__':
     unittest.main()

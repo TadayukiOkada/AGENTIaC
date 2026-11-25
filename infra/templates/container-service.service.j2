@@ -1,0 +1,8 @@
+[Unit]
+Description={{ resource_prefix }} declared container engine (scripts/container-service-worker.py)
+After=docker.service
+[Service]
+User={{ ansible_user }}
+ExecStart=/usr/bin/python3 {{ directory }}/worker.py
+TimeoutStopSec=45
+UMask=0077

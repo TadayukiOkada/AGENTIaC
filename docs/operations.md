@@ -246,6 +246,22 @@ A manifest that declares its container `build` is prepared from that declaration
   downloaded: weights come through `ops download` and its license gate. One preparation runs at
   a time on a host, and the job writes `<project_root>/container-prepare/<id>/result.json`.
 
+Serving such an engine is a declared service in the manifest. Its `service.worker` is
+`container-service-worker.py`, and its `service.unit` is `<resource_prefix>-container-service`,
+the generic role `infra/unit.yml` installs with `run: false` (the claim starts it). The API key
+never becomes a command-line argument, because `ps` and `docker inspect` show those on a shared
+host. Instead, `service.secret_files` lists small files that the worker writes into the service
+root with mode 0600, just before the launch, with `{api_key}` replaced by the key the claim wrote
+to `<root>/api.key`:
+
+```json
+"secret_files": [{"path": "engine-secrets.toml", "text": "[serve]\napi-key = \"{api_key}\"\n"}]
+```
+
+The site's `backends/<id>.launch.json` mounts that file read-only and points the engine at it,
+for example `--config`. A name the claim writes itself (`api.key`, `service.json`,
+`launch-args.json`, …) is refused, as is a key that would need escaping.
+
 Root retirement and thinning follow a two-stage, reference-gated flow:
 
 ```sh

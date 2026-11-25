@@ -15,12 +15,18 @@ Deliberately not here yet, each because it is a measurement or a decision this c
   exists when the window runs.
 - no inline smoke completion. TensorFold's worker asks its own model for "OK"; the generic readiness answer here is the
   declared route answering, and the text check is `scripts/smoke.py`'s, which the harness runs against the served front.
-- no API key handling beyond presenting `<root>/api.key` to the readiness route. How a given engine is *given* that key
-  is an engine flag question, recorded as Stage 1c's (§2.3 of the evaluation plan).
+
+The API key reaches the engine without ever being a command-line argument (`ps` and `docker inspect` show those to anyone
+on a shared host): the manifest's `service.secret_files` names small files this worker writes into `<root>`, mode 0600,
+just before the launch, with `{api_key}` replaced by the key `borrow.prepare_backend` wrote to `<root>/api.key`. The
+site's launch arguments mount such a file read-only and point the engine at it (for example `--config` with
+`api-key = "{api_key}"`). The same key is what the readiness route is asked with.
 """
 import datetime
 import json
+import os
 import pathlib
+import re
 import signal
 import socket
 import subprocess
@@ -36,6 +42,8 @@ PORT = SERVICE['port']
 STATUS_PATH = '/' + (SERVICE.get('status_path') or '/v1/models').lstrip('/')
 PIN = (MANIFEST.get('image') or {}).get('id')
 LABEL = 'io.agent-infra.owner'
+RESERVED = {'api.key', 'service.json', 'launch-args.json', 'backend-manifest.json', 'worker.py', 'status.json',
+            'status.json.tmp', 'memory.jsonl', 'trial-watch.py', 'watch', 'manifest.json', 'ondemand'}
 STOP = 'service termination requested'
 S = {'phase': 'starting'}
 started = False
@@ -79,13 +87,74 @@ def top_pids(output):
     return {line.strip() for line in output.splitlines()[1:] if line.strip().isdigit()}
 
 
+KEY = re.compile(r'[A-Za-z0-9._~+/=-]{16,}')       # nothing a TOML/JSON/shell string would have to escape
+NAME_VALUE = re.compile(r'([A-Z_][A-Z0-9_]*)=([^=].*)')    # an environment name, and a value that is not padding
+SECRET_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,99}')
+
+
+def api_key():
+    """The key in `<root>/api.key`, or '' when there is none.
+
+    The first line that is not blank or a comment is the key: either the bare key, or `NAME=value` when the left side
+    is an environment-style name (`LITELLM_MASTER_KEY=...`) - a bare key that itself contains `=` (base64 padding)
+    stays whole.
+    The file is not read through a symlink.
+    """
+    try:
+        descriptor = os.open(R / 'api.key', os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return ''
+    with os.fdopen(descriptor) as stream:
+        text = stream.read()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        match = NAME_VALUE.fullmatch(line)
+        return match.group(2).strip() if match else line
+    return ''
+
+
 def bearer_headers():
-    key_file = R / 'api.key'
-    if not key_file.is_file():
-        return {}
-    lines = [line.strip() for line in key_file.read_text().splitlines() if line.strip() and not line.startswith('#')]
-    value = lines[0].split('=', 1)[-1].strip() if lines else ''
+    value = api_key()
     return {'Authorization': 'Bearer ' + value} if value else {}
+
+
+def secret_entries():
+    """The declared `service.secret_files`, all checked before any is written (as `borrow.service_spec` checks them)."""
+    entries = SERVICE.get('secret_files') or []
+    if not isinstance(entries, list) or not all(
+            isinstance(entry, dict) and set(entry) == {'path', 'text'} and isinstance(entry['path'], str)
+            and SECRET_NAME.fullmatch(entry['path']) and entry['path'] not in RESERVED
+            and isinstance(entry['text'], str) and '{api_key}' in entry['text'] and len(entry['text']) <= 4096
+            for entry in entries) or len({entry['path'] for entry in entries}) != len(entries):
+        raise RuntimeError('secret_files must be distinct file names of their own in the service root, each with an '
+                           '{api_key} text')
+    return entries
+
+
+def write_secret_files():
+    """Write each declared `service.secret_files` entry into <root>, mode 0600, with `{api_key}` filled in.
+
+    Everything is checked first, so a refused declaration writes nothing; a write that fails or is interrupted leaves
+    no temporary copy of the key behind.
+    """
+    entries = secret_entries()
+    if not entries:
+        return
+    key = api_key()
+    if not KEY.fullmatch(key):
+        raise RuntimeError('secret_files are declared but <root>/api.key holds no usable key')
+    for entry in entries:
+        path, temporary = R / entry['path'], R / f'.{entry["path"]}.tmp'
+        temporary.unlink(missing_ok=True)
+        try:
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, 'w') as stream:
+                stream.write(entry['text'].replace('{api_key}', key))
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def guard():
@@ -135,6 +204,7 @@ try:
     gpu = cmd(['nvidia-smi', '--query-compute-apps=pid', '--format=csv,noheader'])
     if gpu.returncode or gpu_pids(gpu.stdout):
         raise RuntimeError('foreign GPU workload or GPU check failure')
+    write_secret_files()   # a refused declaration or key stops here, before anything of Docker's is touched
     existing = cmd(['docker', 'inspect', N])
     if existing.returncode == 0:
         item = json.loads(existing.stdout)[0]

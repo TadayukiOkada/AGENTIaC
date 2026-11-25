@@ -64,7 +64,8 @@ class DeclaredServiceTests(Fixture):
                                                  'workere'),
                          {'unit': f'{self.prefix}-infernix-inference', 'port': 18090,
                           'root': '/srv/agentiac/evaluations/infernix/service', 'start_timeout_s': None,
-                          'container': 'infernix-serving', 'status_path': None, 'worker': 'infernix-worker.py'})
+                          'container': 'infernix-serving', 'status_path': None, 'worker': 'infernix-worker.py',
+                          'secret_files': None})
 
     def test_a_manifest_that_declares_nothing_leaves_the_strata_rules_in_charge(self):
         manifest = {'source_version': '0.2.8', 'workers': {'workera': {}}}
@@ -108,6 +109,13 @@ class DeclaredServiceTests(Fixture):
         for bad in ({}, 'bad'):
             with self.subTest(service=bad), self.assertRaises(SystemExit):
                 self.borrow.service_spec({'workers': {'workere': {'service': bad}}}, 'workere')
+        for value in ([], 'x', [{'path': 'api.key', 'text': '{api_key}'}], [{'path': '../x', 'text': '{api_key}'}],
+                      [{'path': 'a.toml', 'text': 'no key here'}], [{'path': 'a.toml', 'text': '{api_key}', 'mode': 1}],
+                      [{'path': 'a.toml', 'text': '{api_key}'}, {'path': 'a.toml', 'text': '{api_key}'}]):
+            with self.subTest(secret_files=value), self.assertRaises(SystemExit) as caught:
+                self.borrow.service_spec({'workers': {'workere': {'service': self.service(secret_files=value)}}},
+                                         'workere')
+            self.assertIn('`secret_files`', str(caught.exception))
         for field, value in (('unit', f'{self.prefix}-'), ('root', '/'), ('root', '/srv/../etc'),
                              ('root', '/srv/bad;rm'), ('container', 'bad name'), ('worker', 'infernix worker.py'),
                              ('worker', 'not_a_python_file'), ('worker', '../elsewhere.py'), ('worker', 'a..b.py'),
@@ -286,12 +294,32 @@ class PrepareUnitTests(Fixture):
         self.assertEqual(list(written), [f'{root}/service.json'])
         facts = json.loads(written[f'{root}/service.json'])
         self.assertEqual(facts, {'unit': f'{self.prefix}-infernix-inference', 'port': 18090, 'root': root,
-                                 'container': 'infernix-serving', 'status_path': '/health', 'start_timeout_s': None})
+                                 'container': 'infernix-serving', 'status_path': '/health', 'start_timeout_s': None,
+                                 'secret_files': None})
         self.assertEqual(played, [('unit', 'workere', '-e', 'unit=infernix-inference',
                                    '-e', f'directory={root}')])
 
     def test_the_roles_this_site_can_install_are_read_from_the_file_that_installs_them(self):
-        self.assertEqual(self.borrow.installed_unit_roles(), {'ondemand', 'spark-tensorfold'})
+        self.assertEqual(self.borrow.installed_unit_roles(), {'ondemand', 'spark-tensorfold', 'container-service'})
+
+    def test_the_generic_container_role_has_its_text_and_runs_the_installed_worker(self):
+        text = (self.borrow.CODE / 'infra/templates/container-service.service.j2').read_text()
+        self.assertIn('ExecStart=/usr/bin/python3 {{ directory }}/worker.py', text)
+        self.assertIn('UMask=0077', text)
+
+    def test_declared_secret_files_reach_the_facts_the_worker_reads(self):
+        secret = [{'path': 'engine-secrets.toml', 'text': '[serve]\napi-key = "{api_key}"\n'}]
+        name = self.manifest('infernix-fixture', {'workers': {'workere': {'service': self.service(
+            status_path='/health', secret_files=secret)}}})
+        self.recipe()
+        (self.fixture / 'secrets/nodes').mkdir(parents=True)
+        (self.fixture / 'secrets/nodes/workere.key').write_text('fixture-key\n')
+        root, touched, _, _ = self.attempt(name)
+        written = {command[0].split('> ')[1]: body for command, body in touched
+                   if isinstance(command, list) and 'service.json' in command[0]}
+        self.assertEqual(json.loads(written[f'{root}/service.json'])['secret_files'], secret)
+        # the key itself is never in service.json: the worker fills it in from <root>/api.key on the host
+        self.assertNotIn('fixture-key', written[f'{root}/service.json'])
 
 
 class WatchInvocationTests(Fixture):
