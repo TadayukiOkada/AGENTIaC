@@ -532,6 +532,33 @@ class DanglingReferenceTests(Mutated):
         self.edit_json('agents/pi/router.json', lambda r: r.__setitem__('low', 'local-coder-oldbox'))
         self.assertEqual(self.problems(), [])
 
+    def test_default_backend_must_exist_and_name_the_host_and_patches_must_match_sha256(self):
+        import hashlib
+        self.edit('infra/inventory.yml', yaml.safe_load, yaml.safe_dump,
+                  lambda i: i['all']['children']['workers']['hosts']['workerc'].__setitem__('default_backend', 'missing-b'))
+        self.assertIn('infra/inventory.yml host workerc default_backend: missing-b is not declared', self.problems())
+
+        self.edit('infra/inventory.yml', yaml.safe_load, yaml.safe_dump,
+                  lambda i: i['all']['children']['workers']['hosts']['workerc'].__setitem__('default_backend', 'tf-1.1.4-qfn-mxfp8-nvfp4'))
+        self.assertIn('infra/inventory.yml host workerc default_backend: backends/tf-1.1.4-qfn-mxfp8-nvfp4.json does not name workerc in workers',
+                      self.problems())
+
+        # Restore valid inventory before checking patches.
+        self.edit('infra/inventory.yml', yaml.safe_load, yaml.safe_dump,
+                  lambda i: i['all']['children']['workers']['hosts']['workerc'].pop('default_backend', None))
+        patch_file = self.root / 'backends/patches/fix.patch'
+        patch_file.parent.mkdir(parents=True, exist_ok=True)
+        patch_file.write_text('diff --git a/a b/a\n')
+        good_sha = hashlib.sha256(patch_file.read_bytes()).hexdigest()
+        self.edit_json('backends/tf-1.1.4-qfn-mxfp8-nvfp4.json',
+                       lambda b: b.__setitem__('patches', [{'path': 'backends/patches/fix.patch', 'sha256': good_sha}]))
+        self.assertEqual(self.problems(), [])
+
+        patch_file.write_text('modified\n')
+        self.assertTrue(any('does not match' in p for p in self.problems()))
+        patch_file.unlink()
+        self.assertTrue(any('file is missing' in p for p in self.problems()))
+
 
 class FutureFileTests(Mutated):
     """A checkout without components.yml or agents.yml still reads, and their hosts are references."""

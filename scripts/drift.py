@@ -59,7 +59,7 @@ def control_units(hosts):
     pairs = [(declared.resource(name, ROOT), template(name, code_root=str(CODE), instance_root=str(ROOT), **facts))
              for name in CONTROL_UNITS]
     for name, host in hosts.items():
-        if ('default_profile' in host or host.get('spark_tensorfold')) and 'tunnel_port' in host and host.get('ansible_connection') != 'local':
+        if ('default_profile' in host or host.get('spark_tensorfold') or host.get('default_backend')) and 'tunnel_port' in host and host.get('ansible_connection') != 'local':
             pairs.append((declared.resource(f'tunnel-{name}.service', ROOT), template('tunnel.service', inventory_hostname=name, **host)))
     for unit, wanted in pairs:
         path = Path('/etc/systemd/system') / unit

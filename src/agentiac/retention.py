@@ -146,7 +146,7 @@ def problems(ledger, nodes, backends, route):
             if stem in retired:
                 found.append(f'infra/retention.yml {host} {stem}: held and retired at once')
 
-        expected = facts.get('strata_default_backend') or facts.get('strata_backend')
+        expected = facts.get('default_backend') or facts.get('strata_default_backend') or facts.get('strata_backend')
         if expected:
             served = [entry.get('backend') for entry in block['serving']]
             if served != [expected]:

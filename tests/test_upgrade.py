@@ -873,5 +873,51 @@ class DraftUpgradeTests(SyntheticSiteTestCase):
         self.assertEqual((self.root / 'gateway/local-coder.json').read_text(), before_route)
 
 
+class ContainerPlanTests(SyntheticSiteTestCase):
+    def test_container_engine_plan_reads_shared_weights_and_pinned_patches(self):
+        import hashlib
+        patch_rel = 'backends/patches/infernix.patch'
+        patch_path = self.root / patch_rel
+        patch_path.parent.mkdir(parents=True, exist_ok=True)
+        patch_path.write_text('--- a/x\n+++ b/x\n')
+        patch_sha = hashlib.sha256(patch_path.read_bytes()).hexdigest()
+        files = [{'path': 'model.infernix', 'size': 1024, 'sha256': 'a' * 64}]
+        prior = {
+            'id': 'infernix-1.0.0.dev-prior-qfn-hc4-w4dense', 'context': 262144, 'quantization': 'HC4-W4Dense',
+            'engine': {'repository': 'https://example.invalid/Infernix-dgx-spark-gb10.git', 'revision': '1' * 40, 'version': '1.0.0.dev-prior'},
+            'build': {'dockerfile_sha256': '2' * 64, 'base_images': {}},
+            'model': {'repository': 'ex/Model', 'revision': '3' * 40, 'directory': 'models/hc4', 'files': files},
+            'workers': {'workere': {'slots': 1, 'service': {'unit': 'agentiac-container-service', 'port': 18886, 'root': '/srv/agentiac/inf1'}}},
+        }
+        cand = {
+            'id': 'infernix-1.0.0.dev-next-p1-qfn-hc4-w4dense', 'context': 262144, 'quantization': 'HC4-W4Dense',
+            'engine': {'repository': 'https://example.invalid/Infernix-dgx-spark-gb10.git', 'revision': '4' * 40, 'version': '1.0.0.dev-next-p1'},
+            'build': {'dockerfile_sha256': '2' * 64, 'base_images': {}},
+            'patches': [{'path': patch_rel, 'sha256': patch_sha}],
+            'model': {'repository': 'ex/Model', 'revision': '3' * 40, 'directory': 'models/hc4', 'files': files},
+            'workers': {'workere': {'slots': 1, 'service': {'unit': 'agentiac-container-service', 'port': 18886, 'root': '/srv/agentiac/inf2'}}},
+        }
+        (self.root / f'backends/{prior["id"]}.json').write_text(json.dumps(prior))
+        (self.root / f'backends/{cand["id"]}.json').write_text(json.dumps(cand))
+        ret_path = self.root / 'infra/retention.yml'
+        ret = yaml.safe_load(ret_path.read_text())
+        ret['workere']['candidate'] = [
+            {'backend': prior['id'], 'path': '/srv/agentiac/inf1', 'class': 'persistent', 'form': 'full', 'reason': 'prior'},
+            {'backend': cand['id'], 'path': '/srv/agentiac/inf2', 'class': 'persistent', 'form': 'full', 'reason': 'cand'},
+        ]
+        ret_path.write_text(yaml.safe_dump(ret, sort_keys=False))
+        graph = declared.load(self.root)
+        reading = upgrade.plan(graph, 'workere', cand['id'])
+        self.assertEqual(reading['shape'], 'container')
+        self.assertEqual(reading['blockers'], [])
+        self.assertEqual(reading['reuse']['download_bytes'], 0)
+        self.assertEqual(reading['reuse']['candidates'][0]['backend'], prior['id'])
+        self.assertEqual(reading['patches'][0]['path'], patch_rel)
+
+        patch_path.write_text('bad\n')
+        blocked = upgrade.plan(graph, 'workere', cand['id'])
+        self.assertTrue(any('does not match' in b or 'has sha256' in b for b in blocked['blockers']), blocked['blockers'])
+
+
 if __name__ == '__main__':
     unittest.main()

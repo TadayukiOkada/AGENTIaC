@@ -62,8 +62,8 @@ def defaults(node, facts, backends):
     A `spark_tensorfold` node's default is the TensorFold manifest that names it (backend_names.tensorfold_backend);
     BACKENDS is the declared graph's {stem: manifest}.
     """
-    values = [(key, facts[key]) for key in ('strata_backend', 'strata_default_backend') if facts.get(key)]
-    if facts.get('spark_tensorfold'):
+    values = [(key, facts[key]) for key in ('strata_backend', 'strata_default_backend', 'default_backend') if facts.get(key)]
+    if facts.get('spark_tensorfold') and not facts.get('default_backend'):
         backend = backend_names.tensorfold_backend(backends, node)
         if backend is not None:
             values.append(('spark_tensorfold', backend))

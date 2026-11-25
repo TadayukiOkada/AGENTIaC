@@ -187,6 +187,47 @@ class ClaimResolutionTests(Fixture):
         self.assertEqual(printed, [{'claimed': 'workere', 'profile': self.name, 'context': None,
                                     'idle_unload_minutes': 15}])
 
+    def test_default_backend_resolves_bare_claim_and_manifest_context_while_allowing_tensorfold_rollback(self):
+        (self.fixture / f'backends/{self.name}.json').write_text(json.dumps({
+            'id': self.name,
+            'context': 262144,
+            'workers': {'workere': {'service': {
+                'unit': f'{self.prefix}-infernix-inference', 'port': 18090,
+                'root': '/srv/agentiac/evaluations/infernix/service', 'container': 'infernix-serving',
+                'status_path': '/health', 'start_timeout_s': 60}}},
+        }))
+        tf_name = self.manifest('tf-1.1.4-fixture', {
+            'id': 'tf-1.1.4-fixture',
+            'context': 262144,
+            'engine': {'repository': 'https://github.com/example/TensorFold.git', 'version': '1.1.4'},
+            'workers': {'workere': {'slots': 1}},
+        })
+        host = self.host(spark_tensorfold=True, default_backend=self.name)
+        self.assertFalse(self.borrow.serves_tensorfold('workere', host, None))
+        self.assertTrue(self.borrow.serves_tensorfold('workere', host, tf_name))
+
+        printed, recorded = [], []
+        with mock.patch.object(self.borrow, 'weight_guard'), \
+             mock.patch.object(self.borrow, 'enable_ondemand'), \
+             mock.patch.object(self.borrow, 'start_tunnel'), \
+             mock.patch.object(self.borrow.claims, 'write', side_effect=lambda *a: recorded.append(a)), \
+             mock.patch('builtins.print', side_effect=lambda line: printed.append(json.loads(line))):
+            self.borrow.claim('workere', host, False, 15, False)
+            self.borrow.claim('workere', host, False, 15, False, backend=tf_name)
+        self.assertEqual(printed[0], {'claimed': 'workere', 'profile': self.name, 'context': 262144,
+                                      'idle_unload_minutes': 15})
+        self.assertEqual(recorded[0][2:4], (self.name, 262144))
+        self.assertEqual(printed[1]['profile'], tf_name)
+
+        from agentiac.services import status as status_service
+        transport = types.SimpleNamespace(
+            endpoint=lambda n, h: (18080, 'k'),
+            ondemand_call=lambda n, h, method, path, timeout=10: (503, {}),
+        )
+        with mock.patch('urllib.request.urlopen', side_effect=OSError('down')):
+            self.assertEqual(status_service.host_state('workere', {**host, 'borrowed': True}, transport),
+                             f'not claimed; default backend {self.name}')
+
     def test_backend_cli_choices_exclude_launch_lists_and_schema(self):
         (self.fixture / 'backends/infernix-fixture.launch.json').write_text('["--port", "18090"]\n')
         (self.fixture / 'backends/schema.json').write_text('{"$schema": "https://json-schema.org/draft/2020-12/schema"}\n')

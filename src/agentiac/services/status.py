@@ -57,8 +57,10 @@ def host_state(name, host, transport, timeout=10):
         return f'health {error.code}'
     except OSError:
         if host.get('borrowed'):
-            default = (_tensorfold_backend(name) if host.get('spark_tensorfold') else
-                       host.get('strata_default_backend') or host.get('default_profile'))
+            default = (host.get('default_backend')
+                       or (_tensorfold_backend(name) if host.get('spark_tensorfold') else None)
+                       or host.get('strata_default_backend')
+                       or host.get('default_profile'))
             return 'not claimed' + (f'; default backend {default}' if default else '')
         return 'not reachable (tunnel or worker down)'
 

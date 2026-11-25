@@ -170,7 +170,7 @@ def serving_root(ledger_host, facts, graph, host):
     for entry in ledger_host['serving']:
         if entry.get('path'):
             return entry['path']
-    backend = facts.get('strata_default_backend') or facts.get('strata_backend')
+    backend = facts.get('default_backend') or facts.get('strata_default_backend') or facts.get('strata_backend')
     if backend and backend in graph.backends:
         return retention.inventory_root(facts, backend, graph.backends[backend], host)
     return None

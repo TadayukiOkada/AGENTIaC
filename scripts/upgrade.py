@@ -35,11 +35,15 @@ BLOCKED, UNDECLARED = 1, 2
 def show(plan):
     """The reading as lines a person can act on, blockers first."""
     engine = plan['engine']
+    extra_rev = f"ggml {engine['ggml_revision'][:12]}" if engine.get('ggml_revision') else (
+        'container service' if plan.get('shape') == 'container' else 'ggml unknown')
     print(f"{plan['backend']} on {plan['host']}: engine {engine['version']} at "
           f"{engine['revision'][:12] if engine['revision'] else 'unknown'}, "
-          f"ggml {engine['ggml_revision'][:12] if engine['ggml_revision'] else 'unknown'}, "
+          f"{extra_rev}, "
           f"{plan['weights']['files']} weight file(s) totalling "
           f"{round(plan['weights']['bytes'] / upgrade.GIB, 2)} GiB")
+    for entry in plan.get('patches') or ():
+        print(f"  patch          {entry['path']} ({entry['sha256'][:16]}…)")
     current = plan['current']
     print(f"  serves now     {current['backend'] or 'unknown'} "
           f"(pinned by {current['component'] or 'nothing'}"
@@ -121,7 +125,7 @@ def main():
     except SystemExit as missing:
         print(missing, file=sys.stderr)
         return UNDECLARED
-    if not upgrade.strata_shaped(manifest):
+    if not upgrade.strata_shaped(manifest) and not upgrade.container_shaped(manifest):
         # Both readings below are the Strata preparation: a trial root, a drafter pack, a pin moved to a manifest lock.
         # Answering them for an image-or-container manifest is worse than refusing: `reuse` prints "0.0 GiB" for the
         # 32 files and 102,262,310,123 bytes a nested manifest pins, and `plan` reaches its formatter with a None

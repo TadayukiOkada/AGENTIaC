@@ -130,7 +130,7 @@ def references(nodes, route, current, host, want):
             found.append({'kind': 'target', 'name': name, 'backend': spec['backend'],
                           'current': name == current})
     facts = nodes.get(host) or {}
-    for key in ('strata_default_backend', 'strata_backend'):
+    for key in ('default_backend', 'strata_default_backend', 'strata_backend'):
         if facts.get(key):
             found.append({'kind': 'claim default', 'name': key, 'backend': facts[key], 'current': False})
     return [entry for entry in found if entry['backend'] == want]

@@ -13,7 +13,10 @@ def _node_defaults(node):
         out.append((f'profile/{node.default_profile}', 'default profile'))
     if node.strata_default_backend:
         out.append((f'backend/{node.strata_default_backend}', 'default Strata backend'))
-    if node.spark_tensorfold and node.tensorfold_backend:   # derived from the manifests by the node read (reads.py)
+    default_backend = getattr(node, 'default_backend', None)
+    if default_backend:
+        out.append((f'backend/{default_backend}', 'default backend'))
+    if node.spark_tensorfold and node.tensorfold_backend and not default_backend:   # derived from the manifests by the node read (reads.py)
         out.append((f'backend/{node.tensorfold_backend}', 'TensorFold backend'))
     return out
 

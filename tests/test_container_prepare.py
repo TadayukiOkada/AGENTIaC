@@ -339,6 +339,71 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(self.docker.named('tag'), [])
         self.assertIn('untagged', out)
 
+    def test_patches_are_verified_applied_and_included_in_build_input(self):
+        patch_text = '--- a/Dockerfile\n+++ b/Dockerfile\n@@ -1,2 +1,3 @@\n # two stages, as an engine image usually has\n+# patched\n FROM vendor/cuda:13-devel AS build\n'
+        patch_sha = hashlib.sha256(patch_text.encode()).hexdigest()
+        patched_df_sha = hashlib.sha256((DOCKERFILE.replace('FROM vendor/cuda:13-devel AS build',
+                                                            '# patched\nFROM vendor/cuda:13-devel AS build')).encode()).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            upstream = tmp_path / 'upstream'
+            upstream.mkdir()
+            for cmd in (['init', '-q'], ['config', 'uploadpack.allowAnySHA1InWant', 'true']):
+                subprocess.run(['git', '-C', str(upstream), *cmd], check=True)
+            (upstream / 'Dockerfile').write_text(DOCKERFILE)
+            subprocess.run(['git', '-C', str(upstream), 'add', 'Dockerfile'], check=True)
+            subprocess.run(['git', '-C', str(upstream), '-c', 'user.name=t', '-c', 'user.email=t@example.invalid',
+                            'commit', '-q', '-m', 'init'], check=True)
+            rev = subprocess.run(['git', '-C', str(upstream), 'rev-parse', 'HEAD'], check=True,
+                                 capture_output=True, text=True).stdout.strip()
+            patches_root = tmp_path / 'patches'
+            (patches_root / 'backends/patches').mkdir(parents=True)
+            patch_rel = 'backends/patches/fix.patch'
+            (patches_root / patch_rel).write_text(patch_text)
+
+            base_spec = prepare.spec_of(manifest(), PREFIX)
+            patched_manifest = manifest(
+                engine={'repository': 'https://example.invalid/engine.git', 'revision': rev, 'version': '1.0'},
+                build={'dockerfile_sha256': patched_df_sha, 'base_images': BASES},
+                patches=[{'path': patch_rel, 'sha256': patch_sha}],
+            )
+            patched_spec = prepare.spec_of(patched_manifest, PREFIX)
+            self.assertNotEqual(prepare.build_input(base_spec, BASES), prepare.build_input(patched_spec, BASES))
+
+            work_root = tmp_path / 'work'
+            real_run = subprocess.run
+            real_fetch = prepare.fetch_source
+            with mock.patch.object(prepare, 'fetch_source',
+                                   side_effect=lambda s, d: real_fetch({**s, 'repository': upstream.as_uri()}, d)), \
+                 mock.patch.object(prepare, 'run', side_effect=lambda argv, **kw: (
+                     self.docker(argv, **kw) if argv[:1] == ['docker'] else real_run(argv, **kw))):
+                code = prepare.prepare(patched_manifest, work_root, PREFIX, patches_root=patches_root)
+                self.assertEqual(code, 0)
+                # Re-running with the same clean upstream revision + patch is idempotent.
+                code2 = prepare.prepare(patched_manifest, work_root, PREFIX, patches_root=patches_root)
+                self.assertEqual(code2, 0)
+            result = json.loads((work_root / 'container-prepare' / patched_manifest['id'] / 'result.json').read_text())
+            self.assertEqual(result['source']['patches'], [{'path': patch_rel, 'sha256': patch_sha}])
+
+            with self.assertRaisesRegex(SystemExit, 'no --patches-root'):
+                prepare.apply_patches(patched_spec, work_root / 'container-prepare' / patched_manifest['id'] / 'source', None)
+
+            (patches_root / patch_rel).write_text(patch_text + '# tampered\n')
+            with self.assertRaisesRegex(SystemExit, 'SHA-256'):
+                prepare.apply_patches(patched_spec, work_root / 'container-prepare' / patched_manifest['id'] / 'source', patches_root)
+
+            bad_patch = '--- a/Dockerfile\n+++ b/Dockerfile\n@@ -1,1 +1,1 @@\n-MISSING LINE\n+OTHER\n'
+            (patches_root / patch_rel).write_text(bad_patch)
+            conflict_spec = {**patched_spec, 'patches': [{'path': patch_rel, 'sha256': hashlib.sha256(bad_patch.encode()).hexdigest()}]}
+            with self.assertRaisesRegex(SystemExit, 'could not apply'), \
+                 mock.patch.object(prepare, 'run', side_effect=real_run):
+                prepare.apply_patches(conflict_spec, work_root / 'container-prepare' / patched_manifest['id'] / 'source', patches_root)
+
+        with self.assertRaisesRegex(SystemExit, 'relative `path`'):
+            prepare.spec_of(manifest(patches=[{'path': '../escape.patch', 'sha256': 'a' * 64}]), PREFIX)
+        with self.assertRaisesRegex(SystemExit, '64-hex lowercase'):
+            prepare.spec_of(manifest(patches=[{'path': 'backends/patches/x.patch', 'sha256': 'bad'}]), PREFIX)
+
     def test_the_weights_are_only_looked_at(self):
         directory = self.root / 'models/m/rev'
         directory.mkdir(parents=True)
@@ -425,6 +490,7 @@ class PlaybookTests(unittest.TestCase):
         argv = started['ansible.builtin.command']['argv']
         self.assertIn('--unit={{ resource_prefix }}-prepare-{{ backend_id }}.service', argv)
         self.assertIn('{{ project_root }}/scripts/container-prepare.py', argv)
+        self.assertIn('--patches-root', argv)
         self.assertEqual(argv[-2:], ['--resource-prefix', '{{ resource_prefix }}'])
         self.assertEqual(started['when'], 'preparing.stdout != "active"')
 

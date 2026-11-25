@@ -21,6 +21,16 @@
       - manifest.image.tag | default('') is match('^' + resource_prefix + '-[a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9._-]*$')
       - (manifest.build.revision | default(manifest.engine.revision | default(''))) is match('^[0-9a-f]{40}$')
       - inventory_hostname in (manifest.workers | default({}))
+      - manifest.patches is not defined or (manifest.patches is sequence and manifest.patches is not string)
+      - manifest.patches is not defined or (manifest.patches | reject('mapping') | list | length) == 0
+      - >-
+        manifest.patches is not defined
+        or (manifest.patches | map(attribute='path', default='')
+            | select('match', '^(?!/)(?!.*(^|/)[.][.](/|$)).+$') | list | length) == (manifest.patches | length)
+      - >-
+        manifest.patches is not defined
+        or (manifest.patches | map(attribute='sha256', default='')
+            | select('match', '^[0-9a-f]{64}$') | list | length) == (manifest.patches | length)
     fail_msg: >-
       backends/{{ backend_id }}.json must carry `id` {{ backend_id }}, `build.dockerfile_sha256`, a `build.dockerfile`
       and `build.context` inside the repository, an https source, digests in `build.base_images` and `image.id`, an
@@ -43,6 +53,20 @@
     src: ../scripts/container-prepare.py
     dest: '{{ project_root }}/scripts/container-prepare.py'
     mode: '0750'
+- name: Create pinned patch directories
+  ansible.builtin.file:
+    path: '{{ project_root }}/container-prepare/{{ backend_id }}/patches/{{ item.path | dirname }}'
+    state: directory
+    mode: '0750'
+  loop: '{{ manifest.patches | default([]) }}'
+  when: (manifest.patches | default([])) | length > 0
+- name: Copy pinned patches
+  ansible.builtin.copy:
+    src: '{{ instance_root }}/{{ item.path }}'
+    dest: '{{ project_root }}/container-prepare/{{ backend_id }}/patches/{{ item.path }}'
+    mode: '0640'
+  loop: '{{ manifest.patches | default([]) }}'
+  when: (manifest.patches | default([])) | length > 0
 - name: Inspect the current preparation job
   ansible.builtin.command:
     argv: [systemctl, is-active, '{{ resource_prefix }}-prepare-{{ backend_id }}.service']
@@ -67,6 +91,8 @@
       - '{{ project_root }}/scripts/container-prepare.py'
       - '{{ project_root }}/backend-manifests/{{ backend_id }}.json'
       - '{{ project_root }}'
+      - --patches-root
+      - '{{ project_root }}/container-prepare/{{ backend_id }}/patches'
       - --resource-prefix
       - '{{ resource_prefix }}'
   when: preparing.stdout != "active"
