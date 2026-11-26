@@ -591,6 +591,37 @@ class RecommendTests(Fixture):
         _, entries = self.review('workerc-strata-0.2.8-qfn-gyro-m-tq2_0-128k', context=32768)
         self.assertEqual(self.check(entries['workerc-strata-0.2.8-qfn-gyro-m-tq2_0-128k'], 'license')['status'], 'excluded')
 
+    OWNER_REVIEW = {'status': 'manual-approved', 'decided_by': 'owner', 'decided_at': '2026-11-25',
+                    'scope': 'internal use only, no third-party access', 'note': 'reviewed the licence text'}
+
+    def license_with(self, **entry):
+        (self.root / 'docs/license-review.json').write_text(json.dumps(
+            [{'model': 'synth/Qwen3.8-Flash-Next-Gyro-GGUF', 'detected_apache2': False, 'detected_mit': False, **entry}]))
+        _, entries = self.review('workerc-strata-0.2.8-qfn-gyro-m-tq2_0-128k', context=32768)
+        return self.check(entries['workerc-strata-0.2.8-qfn-gyro-m-tq2_0-128k'], 'license')
+
+    def test_an_owner_review_accepts_a_license_that_is_neither_apache_nor_mit_and_says_for_what(self):
+        check = self.license_with(owner_review=self.OWNER_REVIEW)
+        self.assertEqual(check['status'], 'ok')
+        self.assertIn('2026-11-25', check['reason'])
+        self.assertIn('internal use only', check['reason'])
+
+    def test_a_malformed_owner_review_is_no_review_and_the_entry_stays_excluded(self):
+        for bad in ({**self.OWNER_REVIEW, 'status': 'proposed'}, {**self.OWNER_REVIEW, 'scope': ' '},
+                    {**self.OWNER_REVIEW, 'decided_at': '2026-13-40'}, {**self.OWNER_REVIEW, 'extra': 1},
+                    {k: v for k, v in self.OWNER_REVIEW.items() if k != 'decided_by'}, 'yes'):
+            with self.subTest(review=bad):
+                check = self.license_with(owner_review=bad)
+                self.assertEqual(check['status'], 'excluded')
+                self.assertIn('owner_review is refused', check['reason'])
+
+    def test_an_owner_review_changes_nothing_for_an_entry_that_is_already_apache_or_mit(self):
+        (self.root / 'docs/license-review.json').write_text(json.dumps(
+            [{'model': 'synth/Qwen3.8-Flash-Next-Gyro-GGUF', 'detected_apache2': True, 'detected_mit': False,
+              'owner_review': 'not even an object'}]))
+        _, entries = self.review('workerc-strata-0.2.8-qfn-gyro-m-tq2_0-128k', context=32768)
+        self.assertEqual(self.check(entries['workerc-strata-0.2.8-qfn-gyro-m-tq2_0-128k'], 'license')['status'], 'ok')
+
     def test_a_candidate_that_is_25_percent_faster_at_the_same_quality_is_named(self):
         report, entries = self.both('workerc-strata-0.2.8-qfn-gyro-m-tq2_0-128k', 40.0, context=131072)
         conditions = entries['workerc-strata-0.2.8-qfn-gyro-m-tq2_0-128k']['comparison']['conditions']

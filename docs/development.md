@@ -70,6 +70,12 @@ Use the existing declarative files rather than duplicating machine facts in pros
 `docs/license-review.json` and discovery metadata in `docs/model-discovery.json` are consumed by code;
 they are not ordinary disposable notes. Discovery metadata is not a deployment lock.
 
+A ledger entry whose text is neither Apache-2.0 nor MIT is `excluded` by `model recommend`. The owner may accept it
+for a stated use with an `owner_review` object on that entry: `status: manual-approved`, `decided_by`, `decided_at`
+(`YYYY-MM-DD`), `scope` (the use accepted, shown wherever the licence check is) and `note`. A review missing a key,
+carrying another key, or with an empty value is no review and the entry stays excluded; it never overrides a
+detected Apache-2.0 or MIT text, and it records the decision without changing what the text says.
+
 Generated reference updates, when their inputs change:
 
 ```sh

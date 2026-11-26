@@ -22,6 +22,7 @@ for coding only, and a weight over unmeasured uses would be a number with no rea
 import collections
 import datetime
 import json
+import re
 from pathlib import Path
 import statistics
 
@@ -311,7 +312,46 @@ def _check_license(row, ledger):
                       'never been fetched and hashed, so nothing may be promoted on it')
     if entry.get('detected_apache2') or entry.get('detected_mit'):
         return _check('license', 'ok')
-    return _check('license', 'excluded', f'{repository} is reviewed and is neither Apache-2.0 nor MIT')
+    review = entry.get('owner_review')
+    if review is None:
+        return _check('license', 'excluded', f'{repository} is reviewed and is neither Apache-2.0 nor MIT')
+    problem = owner_review_problem(review)
+    if problem:
+        return _check('license', 'excluded',
+                      f'{repository} is neither Apache-2.0 nor MIT and its owner_review is refused: {problem}')
+    return _check('license', 'ok',
+                  f'{repository} is neither Apache-2.0 nor MIT; accepted by the owner on {review["decided_at"]} '
+                  f'for: {review["scope"]}')
+
+
+OWNER_REVIEW_KEYS = {'status', 'decided_by', 'decided_at', 'scope', 'note'}
+
+
+def owner_review_problem(review):
+    """None when a ledger entry's `owner_review` names who accepted a licence that is not Apache-2.0 or MIT, when,
+    and for what use; otherwise the reason it does not. A malformed review is no review: the entry stays excluded.
+
+    The ledger records the text; this records the one decision the text alone cannot make. The scope is shown
+    wherever the licence check is, so an acceptance for internal use does not read as a general one.
+    """
+    if not isinstance(review, dict):
+        return 'it is not an object'
+    missing, extra = OWNER_REVIEW_KEYS - review.keys(), review.keys() - OWNER_REVIEW_KEYS
+    if missing or extra:
+        return f'missing {sorted(missing)}, unexpected {sorted(extra)}'
+    if review['status'] != 'manual-approved':
+        return f"status is {review['status']!r}, not 'manual-approved'"
+    for key in ('decided_by', 'scope', 'note'):
+        if not isinstance(review[key], str) or not review[key].strip():
+            return f'{key} is empty'
+    when = review['decided_at']
+    if not isinstance(when, str) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', when):
+        return 'decided_at is not YYYY-MM-DD'
+    try:
+        datetime.date.fromisoformat(when)
+    except ValueError:
+        return 'decided_at is not a calendar date'
+    return None
 
 
 def _check_node(row, wanted):
