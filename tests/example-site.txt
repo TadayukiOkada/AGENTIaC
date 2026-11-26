@@ -2,9 +2,10 @@
 # (they read no declaration) and class B (they validate whatever site they run on). One module per line; a second
 # column names the interpreter when the module needs another environment than the default.
 #
-# Left out, with the reason: test_eval_image and test_skills read this site's own lock, skills lock and handoff,
-# and test_dashboard_release_layout asserts that this site's engine catalog has a historical and a rollback release
-# (class C, despite the pattern); the tests that load scripts/archive/ read the site's archive (class C, D8.1).
+# Left out, with the reason: test_site_eval_image, test_site_restore_document, test_site_strata_prepare, and
+# test_skills read this site's own lock, restore doc, pinned manifests, skills lock, and handoff, and
+# test_dashboard_site_release_layout asserts that this site's engine catalog has a historical and a rollback release
+# (class C); the tests that load scripts/archive/ read the site's archive (class C, D8.1).
 test_adapters
 test_aggregate
 test_audit
@@ -32,6 +33,7 @@ test_drift
 test_engine_catalog
 test_engine_service
 test_errors
+test_eval_image
 test_evaluation_watch
 test_evidence
 test_example_site
@@ -68,6 +70,7 @@ test_repo_budget
 test_repo_output_limit
 test_repo_recovery
 test_restore
+test_restore_document
 test_retention
 test_retire
 test_retire_worker
@@ -83,6 +86,7 @@ test_spark_tensorfold_worker
 test_state
 test_status_script
 test_storage
+test_strata_prepare
 test_strata_roots
 test_strata_start
 test_strata_watch
@@ -93,6 +97,7 @@ test_telemetry
 test_tensorfold_prepare
 test_updates
 test_upgrade
+test_dashboard_release_layout .venv-dashboard/bin/python
 test_dashboard_tls .venv-dashboard/bin/python
 test_jobs .venv-dashboard/bin/python
 test_management .venv-dashboard/bin/python
