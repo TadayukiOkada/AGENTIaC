@@ -36,14 +36,13 @@ SITE_TEST_MODULES = frozenset({
     'test_archived_task_keys', 'test_bfcl_target',
     'test_claude_repository', 'test_codex_frontend',
     'test_codex_repository',
-    'test_dashboard_release_layout',
-    'test_eval_image',
+    'test_dashboard_site_release_layout',
     'test_glm_monitor',
     'test_health_scope',
     'test_pi_repository',
-    'test_restore_document',
+    'test_site_eval_image', 'test_site_restore_document', 'test_site_strata_prepare',
     'test_skills',
-    'test_strata_context', 'test_strata_prepare', 'test_strata_scope',
+    'test_strata_context', 'test_strata_scope',
     'test_tool_loop_audit', 'test_tool_loop_reduction'})
 SITE_TESTS = frozenset({f'tests/{name}.py' for name in SITE_TEST_MODULES} | {
     'tests/records.py', 'tests/skills_harness.mjs'})
