@@ -448,6 +448,32 @@ class DeclaredServiceUnitTests(unittest.TestCase):
         self.assertEqual([row[0] for row in rows], ['note'])
         self.assertIn('infernix-inference.service.j2 is missing', rows[0][2])
 
+    def test_container_service_passes_resource_prefix_and_deduplicates_shared_unit(self):
+        root_a = '/srv/agentiac/evaluations/infernix/service-a'
+        root_b = '/srv/agentiac/evaluations/infernix/service-b'
+        for stem, root in (('infernix-a', root_a), ('infernix-b', root_b)):
+            (self.fixture / f'backends/{stem}.json').write_text(json.dumps({
+                'id': stem,
+                'workers': {'workere': {'service': {'unit': 'agentiac-container-service', 'port': 18886, 'root': root}}},
+            }))
+        host = {'project_root': '/srv/agentiac', 'ansible_host': 'workere.example', 'ansible_user': 'tester'}
+        rendered_b = drift.template('container-service.service', directory=root_b, ansible_user='tester',
+                                    resource_prefix='agentiac')
+        calls = []
+
+        def fake_on_host(_host, cmd, **_kw):
+            calls.append(cmd)
+            return mock.Mock(returncode=0, stdout=rendered_b)
+
+        with mock.patch.object(drift.borrow, 'on_host', side_effect=fake_on_host):
+            rows = list(drift.worker_units({'workere': host}))
+        self.assertEqual(rows, [('ok', 'workere agentiac-container-service.service', 'matches its template')])
+        self.assertEqual(len(calls), 1)
+
+        with mock.patch.object(drift.borrow, 'on_host', return_value=mock.Mock(returncode=0, stdout='[Service]\n')):
+            drifted = list(drift.worker_units({'workere': host}))
+        self.assertEqual(drifted, [('drift', 'workere agentiac-container-service.service', 'differs from its template')])
+
 
 if __name__ == '__main__':
     unittest.main()

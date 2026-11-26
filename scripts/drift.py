@@ -280,16 +280,17 @@ def declared_services(name):
 
 def worker_units(hosts):
     """Permanent units on workers. Transient ones have no file to compare."""
+    prefix = declared.setting('resource_prefix', ROOT)
     for name, host in hosts.items():
-        wanted_units = []
+        candidates = {}
         if host.get('ondemand_persistent'):
-            wanted_units.append((declared.resource('ondemand.service', ROOT),
-                                 template('ondemand.service', directory=front_directory(host),
-                                          ansible_user=declared.account(host, ROOT))))
+            unit = declared.resource('ondemand.service', ROOT)
+            candidates[unit] = [template('ondemand.service', directory=front_directory(host),
+                                         ansible_user=declared.account(host, ROOT))]
         elif host.get('spark_tensorfold'):
-            wanted_units.append((declared.resource('spark-tensorfold.service', ROOT),
-                                 template('spark-tensorfold.service', directory=borrow.tensorfold_root(host),
-                                          ansible_user=declared.account(host, ROOT))))
+            unit = declared.resource('spark-tensorfold.service', ROOT)
+            candidates[unit] = [template('spark-tensorfold.service', directory=borrow.tensorfold_root(host),
+                                         ansible_user=declared.account(host, ROOT))]
         for role, root in declared_services(name):
             unit = declared.resource(f'{role}.service', ROOT)
             if role not in borrow.installed_unit_roles():
@@ -300,20 +301,26 @@ def worker_units(hosts):
                 yield 'note', f'{name} {unit}', 'the manifest declares this unit with no `root` to compare against'
                 continue
             try:
-                rendered = template(f'{role}.service', directory=root, ansible_user=declared.account(host, ROOT))
+                rendered = template(f'{role}.service', directory=root, ansible_user=declared.account(host, ROOT),
+                                    resource_prefix=prefix)
             except jinja2.TemplateNotFound:
                 yield 'note', f'{name} {unit}', f'infra/templates/{role}.service.j2 is missing; not compared'
                 continue
-            wanted_units.append((unit, rendered))
-        for unit, wanted in wanted_units:
+            # Candidate manifests can share one unit role (e.g. container-service) across service roots.
+            candidates.setdefault(unit, []).append(rendered)
+        for unit, variants in candidates.items():
             try:
                 done = borrow.on_host(host, ['cat', f'/etc/systemd/system/{unit}'], timeout=20)
             except (OSError, subprocess.TimeoutExpired):
                 done = None
             if done is None or done.returncode == 255:
                 yield 'note', f'{name} {unit}', 'host not reachable; not compared'
+            elif done.returncode != 0:
+                yield compare(f'{name} {unit}', variants[0], None)
+            elif done.stdout in variants:
+                yield 'ok', f'{name} {unit}', 'matches its template'
             else:
-                yield compare(f'{name} {unit}', wanted, done.stdout if done.returncode == 0 else None)
+                yield 'drift', f'{name} {unit}', 'differs from its template'
 
 
 def sections(hosts):
